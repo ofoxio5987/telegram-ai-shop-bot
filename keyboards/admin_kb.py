@@ -11,5 +11,6 @@ def get_admin_menu():
             [KeyboardButton(text="❌ Удалить товар")],
             [KeyboardButton(text="🚪 Выход из админ-панели")]
         ],
-        resize_keyboard=True
+        resize_keyboard=True,
+        input_field_placeholder="Админ-меню"
     )
