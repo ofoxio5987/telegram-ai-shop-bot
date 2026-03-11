@@ -5,11 +5,15 @@ from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
 from aiogram.types import CallbackQuery
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.memory import MemoryStorage
 
 from database import connect, create_tables
 from keyboards.user_kb import get_main_menu, get_categories_menu
 from keyboards.inline_kb import product_inline_keyboard, cart_inline_keyboard
 from keyboards.admin_kb import get_admin_menu
+from states.product_states import AddProduct, EditProduct, DeleteProduct
+from states.category_states import AddCategory, EditCategory, DeleteCategory
 
 load_dotenv()
 
@@ -23,12 +27,11 @@ if not DATABASE_URL:
     raise ValueError("DATABASE_URL не найден")
 
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+dp = Dispatcher(storage=MemoryStorage())
 pool = None
 
-# Простая и надежная авторизация без FSM
-admin_auth_stage = {}   # user_id -> "login" / "password"
-admin_auth_data = {}    # user_id -> {"login": "admin"}
+admin_auth_stage = {}
+admin_auth_data = {}
 
 
 async def save_user(message: types.Message):
@@ -137,7 +140,7 @@ async def start(message: types.Message):
     )
 
 
-# ---------- НАДЕЖНЫЙ ВХОД В АДМИНКУ ----------
+# ---------- ВХОД В АДМИНКУ ----------
 
 @dp.message(F.text == "🔐 Админ-вход")
 async def admin_login_start(message: types.Message):
@@ -173,7 +176,6 @@ async def admin_password_input(message: types.Message):
         await message.answer("Неверный логин.", reply_markup=get_main_menu())
         return
 
-    # Прямая и надежная проверка
     if password != admin["password_hash"]:
         admin_auth_stage.pop(user_id, None)
         admin_auth_data.pop(user_id, None)
@@ -578,28 +580,293 @@ async def admin_categories_handler(message: types.Message):
     await message.answer(text, reply_markup=get_admin_menu())
 
 
+# ---------- УПРАВЛЕНИЕ ТОВАРАМИ ----------
+
 @dp.message(F.text == "➕ Добавить товар")
-async def admin_add_product_placeholder(message: types.Message):
+async def admin_add_product(message: types.Message, state: FSMContext):
     if not await is_admin(message.from_user.id):
         await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
         return
-    await message.answer("Добавление товара подключим следующим шагом.", reply_markup=get_admin_menu())
+
+    await state.set_state(AddProduct.name)
+    await message.answer("Введите название товара:")
+
+
+@dp.message(AddProduct.name)
+async def add_product_name(message: types.Message, state: FSMContext):
+    await state.update_data(name=message.text.strip())
+    await state.set_state(AddProduct.description)
+    await message.answer("Введите описание товара:")
+
+
+@dp.message(AddProduct.description)
+async def add_product_description(message: types.Message, state: FSMContext):
+    await state.update_data(description=message.text.strip())
+    await state.set_state(AddProduct.price)
+    await message.answer("Введите цену товара в тенге:")
+
+
+@dp.message(AddProduct.price)
+async def add_product_price(message: types.Message, state: FSMContext):
+    try:
+        price = int(message.text.strip())
+    except ValueError:
+        await message.answer("Введите цену числом, например: 25000")
+        return
+
+    await state.update_data(price=price)
+    await state.set_state(AddProduct.image_url)
+    await message.answer("Введите ссылку на картинку:")
+
+
+@dp.message(AddProduct.image_url)
+async def add_product_image(message: types.Message, state: FSMContext):
+    await state.update_data(image_url=message.text.strip())
+    await state.set_state(AddProduct.category)
+    await message.answer("Введите категорию точно так: Электроника / Одежда / Обувь / Аксессуары")
+
+
+@dp.message(AddProduct.category)
+async def add_product_category(message: types.Message, state: FSMContext):
+    await state.update_data(category=message.text.strip())
+    await state.set_state(AddProduct.stock)
+    await message.answer("Введите количество на складе:")
+
+
+@dp.message(AddProduct.stock)
+async def add_product_finish(message: types.Message, state: FSMContext):
+    try:
+        stock = int(message.text.strip())
+    except ValueError:
+        await message.answer("Введите количество числом, например: 10")
+        return
+
+    data = await state.get_data()
+
+    async with pool.acquire() as conn:
+        category_id = await conn.fetchval(
+            "SELECT id FROM categories WHERE name = $1",
+            data["category"]
+        )
+
+        if not category_id:
+            await message.answer("Такой категории нет.")
+            await state.clear()
+            await message.answer("Возврат в админ-меню.", reply_markup=get_admin_menu())
+            return
+
+        await conn.execute(
+            """
+            INSERT INTO products (name, description, price, image_url, category_id, stock)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            """,
+            data["name"],
+            data["description"],
+            data["price"],
+            data["image_url"],
+            category_id,
+            stock
+        )
+
+    await state.clear()
+    await message.answer("✅ Товар успешно добавлен.", reply_markup=get_admin_menu())
 
 
 @dp.message(F.text == "✏️ Изменить цену товара")
-async def admin_edit_product_placeholder(message: types.Message):
+async def edit_product_start(message: types.Message, state: FSMContext):
     if not await is_admin(message.from_user.id):
         await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
         return
-    await message.answer("Изменение цены подключим следующим шагом.", reply_markup=get_admin_menu())
+
+    await state.set_state(EditProduct.choose_product)
+    await message.answer("Введите точное название товара:")
+
+
+@dp.message(EditProduct.choose_product)
+async def edit_product_choose(message: types.Message, state: FSMContext):
+    await state.update_data(product=message.text.strip())
+    await state.set_state(EditProduct.new_price)
+    await message.answer("Введите новую цену в тенге:")
+
+
+@dp.message(EditProduct.new_price)
+async def edit_product_finish(message: types.Message, state: FSMContext):
+    try:
+        new_price = int(message.text.strip())
+    except ValueError:
+        await message.answer("Введите цену числом.")
+        return
+
+    data = await state.get_data()
+
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "UPDATE products SET price = $1 WHERE name = $2",
+            new_price,
+            data["product"]
+        )
+
+    await state.clear()
+
+    if result.endswith("0"):
+        await message.answer("Товар не найден.", reply_markup=get_admin_menu())
+        return
+
+    await message.answer("💰 Цена обновлена.", reply_markup=get_admin_menu())
 
 
 @dp.message(F.text == "❌ Удалить товар")
-async def admin_delete_product_placeholder(message: types.Message):
+async def admin_delete_product(message: types.Message, state: FSMContext):
     if not await is_admin(message.from_user.id):
         await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
         return
-    await message.answer("Удаление товара подключим следующим шагом.", reply_markup=get_admin_menu())
+
+    await state.set_state(DeleteProduct.choose_product)
+    await message.answer("Введите точное название товара для удаления:")
+
+
+@dp.message(DeleteProduct.choose_product)
+async def delete_product(message: types.Message, state: FSMContext):
+    product_name = message.text.strip()
+
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM products WHERE name = $1",
+            product_name
+        )
+
+    await state.clear()
+
+    if result.endswith("0"):
+        await message.answer("Товар не найден.", reply_markup=get_admin_menu())
+        return
+
+    await message.answer("🗑 Товар удалён.", reply_markup=get_admin_menu())
+
+
+# ---------- УПРАВЛЕНИЕ КАТЕГОРИЯМИ ----------
+
+@dp.message(F.text == "➕ Добавить категорию")
+async def admin_add_category_start(message: types.Message, state: FSMContext):
+    if not await is_admin(message.from_user.id):
+        await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
+        return
+
+    await state.set_state(AddCategory.name)
+    await message.answer("Введите название новой категории:")
+
+
+@dp.message(AddCategory.name)
+async def add_category_name(message: types.Message, state: FSMContext):
+    await state.update_data(name=message.text.strip())
+    await state.set_state(AddCategory.description)
+    await message.answer("Введите описание категории:")
+
+
+@dp.message(AddCategory.description)
+async def add_category_description(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+
+    async with pool.acquire() as conn:
+        exists = await conn.fetchval(
+            "SELECT COUNT(*) FROM categories WHERE name = $1",
+            data["name"]
+        )
+
+        if exists > 0:
+            await state.clear()
+            await message.answer("Такая категория уже существует.", reply_markup=get_admin_menu())
+            return
+
+        await conn.execute(
+            """
+            INSERT INTO categories (name, description)
+            VALUES ($1, $2)
+            """,
+            data["name"],
+            message.text.strip()
+        )
+
+    await state.clear()
+    await message.answer("✅ Категория добавлена.", reply_markup=get_admin_menu())
+
+
+@dp.message(F.text == "✏️ Изменить категорию")
+async def admin_edit_category_start(message: types.Message, state: FSMContext):
+    if not await is_admin(message.from_user.id):
+        await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
+        return
+
+    await state.set_state(EditCategory.old_name)
+    await message.answer("Введите текущее название категории:")
+
+
+@dp.message(EditCategory.old_name)
+async def edit_category_old_name(message: types.Message, state: FSMContext):
+    await state.update_data(old_name=message.text.strip())
+    await state.set_state(EditCategory.new_name)
+    await message.answer("Введите новое название категории:")
+
+
+@dp.message(EditCategory.new_name)
+async def edit_category_new_name(message: types.Message, state: FSMContext):
+    await state.update_data(new_name=message.text.strip())
+    await state.set_state(EditCategory.new_description)
+    await message.answer("Введите новое описание категории:")
+
+
+@dp.message(EditCategory.new_description)
+async def edit_category_finish(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE categories
+            SET name = $1, description = $2
+            WHERE name = $3
+            """,
+            data["new_name"],
+            message.text.strip(),
+            data["old_name"]
+        )
+
+    await state.clear()
+
+    if result.endswith("0"):
+        await message.answer("Категория не найдена.", reply_markup=get_admin_menu())
+        return
+
+    await message.answer("✏️ Категория обновлена.", reply_markup=get_admin_menu())
+
+
+@dp.message(F.text == "❌ Удалить категорию")
+async def admin_delete_category_start(message: types.Message, state: FSMContext):
+    if not await is_admin(message.from_user.id):
+        await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
+        return
+
+    await state.set_state(DeleteCategory.name)
+    await message.answer("Введите название категории для удаления:")
+
+
+@dp.message(DeleteCategory.name)
+async def delete_category_finish(message: types.Message, state: FSMContext):
+    category_name = message.text.strip()
+
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM categories WHERE name = $1",
+            category_name
+        )
+
+    await state.clear()
+
+    if result.endswith("0"):
+        await message.answer("Категория не найдена.", reply_markup=get_admin_menu())
+        return
+
+    await message.answer("🗑 Категория удалена.", reply_markup=get_admin_menu())
 
 
 @dp.message(F.text == "🚪 Выход из админ-панели")
@@ -630,7 +897,7 @@ async def main():
     pool = await connect()
     await create_tables(pool)
 
-    print("Бот запущен: магазин + надежный вход в админку")
+    print("Бот запущен: магазин + админка + категории")
     await dp.start_polling(bot)
 
 
