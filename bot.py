@@ -59,7 +59,7 @@ async def show_products_by_category(message: types.Message, category_name: str, 
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT p.id, p.name, p.description, p.price, p.stock
+                SELECT p.id, p.name, p.description, p.price, p.stock, p.image_url
                 FROM products p
                 JOIN categories c ON p.category_id = c.id
                 WHERE c.name = $1 AND p.is_active = TRUE
@@ -78,17 +78,32 @@ async def show_products_by_category(message: types.Message, category_name: str, 
         await message.answer(f"{emoji} Категория: {category_name}")
 
         for row in rows:
-            text = (
+            caption = (
                 f"📦 {row['name']}\n"
                 f"📝 {row['description']}\n"
                 f"💰 Цена: {row['price']}₽\n"
                 f"📦 В наличии: {row['stock']}"
             )
 
-            await message.answer(
-                text,
-                reply_markup=product_inline_keyboard(row["id"])
-            )
+            image_url = row["image_url"]
+
+            if image_url and image_url.strip():
+                try:
+                    await message.answer_photo(
+                        photo=image_url,
+                        caption=caption,
+                        reply_markup=product_inline_keyboard(row["id"])
+                    )
+                except Exception:
+                    await message.answer(
+                        caption,
+                        reply_markup=product_inline_keyboard(row["id"])
+                    )
+            else:
+                await message.answer(
+                    caption,
+                    reply_markup=product_inline_keyboard(row["id"])
+                )
 
     except Exception as e:
         await message.answer(
@@ -135,28 +150,24 @@ async def catalog_handler(message: types.Message):
 
 @dp.message(F.text == "📱 Электроника")
 async def electronics_handler(message: types.Message):
-    await message.answer("Открываю категорию Электроника...")
     await log_action(message.from_user.id, "open_category")
     await show_products_by_category(message, "Электроника", "📱")
 
 
 @dp.message(F.text == "👕 Одежда")
 async def clothes_handler(message: types.Message):
-    await message.answer("Открываю категорию Одежда...")
     await log_action(message.from_user.id, "open_category")
     await show_products_by_category(message, "Одежда", "👕")
 
 
 @dp.message(F.text == "👟 Обувь")
 async def shoes_handler(message: types.Message):
-    await message.answer("Открываю категорию Обувь...")
     await log_action(message.from_user.id, "open_category")
     await show_products_by_category(message, "Обувь", "👟")
 
 
 @dp.message(F.text == "🎒 Аксессуары")
 async def accessories_handler(message: types.Message):
-    await message.answer("Открываю категорию Аксессуары...")
     await log_action(message.from_user.id, "open_category")
     await show_products_by_category(message, "Аксессуары", "🎒")
 
@@ -178,10 +189,6 @@ async def add_to_favorites(callback: CallbackQuery):
 
     await log_action(callback.from_user.id, "add_to_favorite", product_id=product_id)
     await callback.answer("Товар добавлен в избранное ❤️")
-    await callback.message.answer(
-        "Готово: товар сохранён в избранном.",
-        reply_markup=get_main_menu()
-    )
 
 
 @dp.callback_query(F.data.startswith("cart_"))
@@ -202,10 +209,6 @@ async def add_to_cart(callback: CallbackQuery):
 
     await log_action(callback.from_user.id, "add_to_cart", product_id=product_id)
     await callback.answer("Товар добавлен в корзину 🧺")
-    await callback.message.answer(
-        "Готово: товар добавлен в корзину.",
-        reply_markup=get_main_menu()
-    )
 
 
 @dp.message(F.text == "❤️ Избранное")
@@ -409,7 +412,7 @@ async def main():
     pool = await connect()
     await create_tables(pool)
 
-    print("Бот запущен: магазин с избранным и корзиной")
+    print("Бот запущен: магазин с картинками, избранным и корзиной")
     await dp.start_polling(bot)
 
 
