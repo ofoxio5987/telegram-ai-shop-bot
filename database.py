@@ -30,6 +30,12 @@ async def create_tables(pool):
         );
         """)
 
+        # На случай если таблица admins была создана раньше без telegram_id
+        await conn.execute("""
+        ALTER TABLE admins
+        ADD COLUMN IF NOT EXISTS telegram_id BIGINT;
+        """)
+
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS categories(
             id SERIAL PRIMARY KEY,
@@ -196,19 +202,19 @@ async def create_tables(pool):
             18
             )
 
-        # Гарантированно обновляем админа:
-        # логин: admin
-        # пароль: admin123
         admin_exists = await conn.fetchval(
             "SELECT COUNT(*) FROM admins WHERE login = 'admin';"
         )
 
         if admin_exists == 0:
+            # логин: admin
+            # пароль: admin123
             await conn.execute("""
             INSERT INTO admins (login, password_hash)
             VALUES ('admin', 'admin123');
             """)
         else:
+            # на всякий случай гарантируем правильный пароль
             await conn.execute("""
             UPDATE admins
             SET password_hash = 'admin123'
