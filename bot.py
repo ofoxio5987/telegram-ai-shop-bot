@@ -400,10 +400,11 @@ async def assistant_handler(message: types.Message):
     )
 
 
-# ---------- АДМИН-ПАНЕЛЬ ----------
+# -------- АДМИН-ПАНЕЛЬ --------
 
 @dp.message(F.text == "🔐 Админ-вход")
 async def admin_login_start(message: types.Message, state: FSMContext):
+    await state.clear()
     await state.set_state(AdminAuth.waiting_for_login)
     await message.answer("Введите логин администратора:")
 
@@ -465,18 +466,6 @@ async def admin_stats_handler(message: types.Message):
         cart_count = await conn.fetchval("SELECT COUNT(*) FROM cart")
         actions_count = await conn.fetchval("SELECT COUNT(*) FROM user_actions")
 
-        top_products = await conn.fetch(
-            """
-            SELECT p.name, COUNT(*) as cnt
-            FROM user_actions ua
-            JOIN products p ON ua.product_id = p.id
-            WHERE ua.action_type IN ('add_to_cart', 'add_to_favorite')
-            GROUP BY p.name
-            ORDER BY cnt DESC
-            LIMIT 5
-            """
-        )
-
     text = (
         "📊 Статистика магазина\n\n"
         f"👥 Пользователей: {users_count}\n"
@@ -484,15 +473,8 @@ async def admin_stats_handler(message: types.Message):
         f"🗂 Категорий: {categories_count}\n"
         f"❤️ Добавлений в избранное: {favorites_count}\n"
         f"🧺 Товаров в корзинах: {cart_count}\n"
-        f"📈 Действий пользователей: {actions_count}\n\n"
-        "🔥 Популярные товары:\n"
+        f"📈 Действий пользователей: {actions_count}"
     )
-
-    if top_products:
-        for item in top_products:
-            text += f"• {item['name']} — {item['cnt']} действий\n"
-    else:
-        text += "Пока нет данных\n"
 
     await message.answer(text, reply_markup=get_admin_menu())
 
@@ -584,10 +566,7 @@ async def admin_categories_handler(message: types.Message):
 
     text = "🗂 Категории:\n\n"
     for row in rows:
-        text += (
-            f"{row['id']}. {row['name']}\n"
-            f"Описание: {row['description']}\n\n"
-        )
+        text += f"{row['id']}. {row['name']}\nОписание: {row['description']}\n\n"
 
     await message.answer(text, reply_markup=get_admin_menu())
 
@@ -660,7 +639,7 @@ async def add_product_finish(message: types.Message, state: FSMContext):
         )
 
         if not category_id:
-            await message.answer("Такой категории нет. Проверь название.")
+            await message.answer("Такой категории нет.")
             await state.clear()
             await message.answer("Возврат в админ-меню.", reply_markup=get_admin_menu())
             return
