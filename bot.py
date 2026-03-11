@@ -887,7 +887,7 @@ async def admin_products_handler(message: types.Message):
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT p.name, p.price, p.stock, c.name AS category_name
+            SELECT p.name, p.price, p.stock, p.description, p.image_url, c.name AS category_name
             FROM products p
             LEFT JOIN categories c ON p.category_id = c.id
             ORDER BY p.id
@@ -905,7 +905,8 @@ async def admin_products_handler(message: types.Message):
             f"📦 {row['name']}\n"
             f"💰 {row['price']} ₸\n"
             f"🏷 Категория: {category}\n"
-            f"📦 Остаток: {row['stock']}\n\n"
+            f"📦 Остаток: {row['stock']}\n"
+            f"📝 {row['description']}\n\n"
         )
 
     await message.answer(text, reply_markup=get_admin_menu())
@@ -1029,47 +1030,129 @@ async def add_product_finish(message: types.Message, state: FSMContext):
     await message.answer("✅ Товар успешно добавлен.", reply_markup=get_admin_menu())
 
 
-@dp.message(F.text == "✏️ Изменить цену товара")
+@dp.message(F.text == "✏️ Изменить товар")
 async def edit_product_start(message: types.Message, state: FSMContext):
     if not await is_admin(message.from_user.id):
         await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
         return
 
     await state.set_state(EditProduct.choose_product)
-    await message.answer("Введите точное название товара:")
+    await message.answer(
+        "Введите точное название товара, который хотите изменить:"
+    )
 
 
 @dp.message(EditProduct.choose_product)
 async def edit_product_choose(message: types.Message, state: FSMContext):
-    await state.update_data(product=message.text.strip())
-    await state.set_state(EditProduct.new_price)
-    await message.answer("Введите новую цену в тенге:")
-
-
-@dp.message(EditProduct.new_price)
-async def edit_product_finish(message: types.Message, state: FSMContext):
-    try:
-        new_price = int(message.text.strip())
-    except ValueError:
-        await message.answer("Введите цену числом.")
-        return
-
-    data = await state.get_data()
+    product_name = message.text.strip()
 
     async with pool.acquire() as conn:
-        result = await conn.execute(
-            "UPDATE products SET price = $1 WHERE name = $2",
-            new_price,
-            data["product"]
+        exists = await conn.fetchval(
+            "SELECT COUNT(*) FROM products WHERE name = $1",
+            product_name
         )
+
+    if exists == 0:
+        await state.clear()
+        await message.answer("Товар не найден.", reply_markup=get_admin_menu())
+        return
+
+    await state.update_data(product=product_name)
+    await state.set_state(EditProduct.choose_field)
+    await message.answer(
+        "Что хотите изменить?\n"
+        "Напишите одно слово:\n"
+        "название / описание / цена / картинка / остаток / категория"
+    )
+
+
+@dp.message(EditProduct.choose_field)
+async def edit_product_field(message: types.Message, state: FSMContext):
+    field = message.text.strip().lower()
+
+    allowed = ["название", "описание", "цена", "картинка", "остаток", "категория"]
+    if field not in allowed:
+        await message.answer("Введите: название / описание / цена / картинка / остаток / категория")
+        return
+
+    await state.update_data(field=field)
+    await state.set_state(EditProduct.new_value)
+    await message.answer("Введите новое значение:")
+
+
+@dp.message(EditProduct.new_value)
+async def edit_product_finish(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    product_name = data["product"]
+    field = data["field"]
+    new_value = message.text.strip()
+
+    async with pool.acquire() as conn:
+        if field == "название":
+            result = await conn.execute(
+                "UPDATE products SET name = $1 WHERE name = $2",
+                new_value,
+                product_name
+            )
+        elif field == "описание":
+            result = await conn.execute(
+                "UPDATE products SET description = $1 WHERE name = $2",
+                new_value,
+                product_name
+            )
+        elif field == "цена":
+            try:
+                price = int(new_value)
+            except ValueError:
+                await message.answer("Цена должна быть числом.")
+                return
+
+            result = await conn.execute(
+                "UPDATE products SET price = $1 WHERE name = $2",
+                price,
+                product_name
+            )
+        elif field == "картинка":
+            result = await conn.execute(
+                "UPDATE products SET image_url = $1 WHERE name = $2",
+                new_value,
+                product_name
+            )
+        elif field == "остаток":
+            try:
+                stock = int(new_value)
+            except ValueError:
+                await message.answer("Остаток должен быть числом.")
+                return
+
+            result = await conn.execute(
+                "UPDATE products SET stock = $1 WHERE name = $2",
+                stock,
+                product_name
+            )
+        else:
+            category_id = await conn.fetchval(
+                "SELECT id FROM categories WHERE name = $1",
+                new_value
+            )
+
+            if not category_id:
+                await message.answer("Такой категории нет.")
+                return
+
+            result = await conn.execute(
+                "UPDATE products SET category_id = $1 WHERE name = $2",
+                category_id,
+                product_name
+            )
 
     await state.clear()
 
     if result.endswith("0"):
-        await message.answer("Товар не найден.", reply_markup=get_admin_menu())
+        await message.answer("Изменение не выполнено.", reply_markup=get_admin_menu())
         return
 
-    await message.answer("💰 Цена обновлена.", reply_markup=get_admin_menu())
+    await message.answer("✏️ Товар успешно обновлён.", reply_markup=get_admin_menu())
 
 
 @dp.message(F.text == "❌ Удалить товар")
@@ -1254,7 +1337,7 @@ async def main():
     pool = await connect()
     await create_tables(pool)
 
-    print("Бот запущен: магазин + заказы + история + статистика")
+    print("Бот запущен: магазин + полное редактирование товара")
     await dp.start_polling(bot)
 
 

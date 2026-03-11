@@ -12,7 +12,8 @@ class AddProduct(StatesGroup):
 
 class EditProduct(StatesGroup):
     choose_product = State()
-    new_price = State()
+    choose_field = State()
+    new_value = State()
 
 
 class DeleteProduct(StatesGroup):
