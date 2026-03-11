@@ -223,6 +223,7 @@ async def help_handler(message: types.Message):
         "🔍 Поиск — поиск по названию\n"
         "❤️ Избранное — сохранённые товары\n"
         "🧺 Корзина — товары к заказу\n"
+        "📜 Мои заказы — история заказов\n"
         "🎯 Рекомендации — персональные предложения\n"
         "🤖 Умный помощник — подбор товара\n"
         "👤 Профиль — ваши данные\n"
@@ -335,7 +336,7 @@ async def cart_handler(message: types.Message):
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT p.name, p.price, c.quantity
+            SELECT p.id, p.name, p.price, c.quantity
             FROM cart c
             JOIN products p ON c.product_id = p.id
             WHERE c.telegram_id = $1
@@ -378,6 +379,107 @@ async def clear_cart(callback: CallbackQuery):
         "Корзина успешно очищена 🗑",
         reply_markup=get_main_menu()
     )
+
+
+@dp.callback_query(F.data == "checkout_order")
+async def checkout_order(callback: CallbackQuery):
+    async with pool.acquire() as conn:
+        cart_rows = await conn.fetch(
+            """
+            SELECT p.id, p.name, p.price, c.quantity
+            FROM cart c
+            JOIN products p ON c.product_id = p.id
+            WHERE c.telegram_id = $1
+            ORDER BY c.id
+            """,
+            callback.from_user.id
+        )
+
+        if not cart_rows:
+            await callback.answer("Корзина пуста")
+            return
+
+        total_amount = 0
+        for row in cart_rows:
+            total_amount += row["price"] * row["quantity"]
+
+        order_id = await conn.fetchval(
+            """
+            INSERT INTO orders (telegram_id, total_amount, status)
+            VALUES ($1, $2, 'new')
+            RETURNING id
+            """,
+            callback.from_user.id,
+            total_amount
+        )
+
+        for row in cart_rows:
+            await conn.execute(
+                """
+                INSERT INTO order_items (order_id, product_id, quantity, price)
+                VALUES ($1, $2, $3, $4)
+                """,
+                order_id,
+                row["id"],
+                row["quantity"],
+                row["price"]
+            )
+
+            await conn.execute(
+                """
+                UPDATE products
+                SET stock = GREATEST(stock - $1, 0)
+                WHERE id = $2
+                """,
+                row["quantity"],
+                row["id"]
+            )
+
+        await conn.execute(
+            "DELETE FROM cart WHERE telegram_id = $1",
+            callback.from_user.id
+        )
+
+    await log_action(callback.from_user.id, "checkout")
+    await callback.answer("Заказ оформлен")
+    await callback.message.answer(
+        f"✅ Заказ №{order_id} успешно оформлен.\n"
+        f"Сумма заказа: {total_amount} ₸",
+        reply_markup=get_main_menu()
+    )
+
+
+@dp.message(F.text == "📜 Мои заказы")
+async def my_orders_handler(message: types.Message):
+    async with pool.acquire() as conn:
+        orders = await conn.fetch(
+            """
+            SELECT id, total_amount, status, created_at
+            FROM orders
+            WHERE telegram_id = $1
+            ORDER BY created_at DESC
+            LIMIT 10
+            """,
+            message.from_user.id
+        )
+
+    if not orders:
+        await message.answer(
+            "У вас пока нет оформленных заказов.",
+            reply_markup=get_main_menu()
+        )
+        return
+
+    text = "📜 Ваши заказы:\n\n"
+    for order in orders:
+        text += (
+            f"Заказ №{order['id']}\n"
+            f"💰 Сумма: {order['total_amount']} ₸\n"
+            f"📦 Статус: {order['status']}\n"
+            f"🕒 Дата: {order['created_at']}\n\n"
+        )
+
+    await message.answer(text, reply_markup=get_main_menu())
 
 
 @dp.message(F.text == "🎯 Рекомендации")
@@ -455,6 +557,11 @@ async def profile_handler(message: types.Message):
             message.from_user.id
         )
 
+        orders_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM orders WHERE telegram_id = $1",
+            message.from_user.id
+        )
+
     if not user:
         await message.answer(
             "Профиль не найден. Нажмите /start",
@@ -475,6 +582,7 @@ async def profile_handler(message: types.Message):
         f"Любимая категория: {favorite_category}\n"
         f"Избранных товаров: {favorites_count}\n"
         f"Товаров в корзине: {cart_count}\n"
+        f"Заказов: {orders_count}\n"
         f"Дата регистрации: {user['created_at']}",
         reply_markup=get_main_menu()
     )
@@ -666,43 +774,75 @@ async def admin_stats_handler(message: types.Message):
         await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
         return
 
-    async with pool.acquire() as conn:
-        users_count = await conn.fetchval("SELECT COUNT(*) FROM users")
-        products_count = await conn.fetchval("SELECT COUNT(*) FROM products")
-        categories_count = await conn.fetchval("SELECT COUNT(*) FROM categories")
-        favorites_count = await conn.fetchval("SELECT COUNT(*) FROM favorites")
-        cart_count = await conn.fetchval("SELECT COUNT(*) FROM cart")
-        actions_count = await conn.fetchval("SELECT COUNT(*) FROM user_actions")
+    try:
+        async with pool.acquire() as conn:
+            users_count = await conn.fetchval("SELECT COUNT(*) FROM users")
+            products_count = await conn.fetchval("SELECT COUNT(*) FROM products")
+            categories_count = await conn.fetchval("SELECT COUNT(*) FROM categories")
+            favorites_count = await conn.fetchval("SELECT COUNT(*) FROM favorites")
+            cart_count = await conn.fetchval("SELECT COUNT(*) FROM cart")
+            actions_count = await conn.fetchval("SELECT COUNT(*) FROM user_actions")
+            orders_count = await conn.fetchval("SELECT COUNT(*) FROM orders")
+            revenue = await conn.fetchval("SELECT COALESCE(SUM(total_amount), 0) FROM orders")
+            assistant_count = await conn.fetchval("SELECT COUNT(*) FROM assistant_sessions")
 
-        top_categories = await conn.fetch(
-            """
-            SELECT favorite_category, COUNT(*) AS cnt
-            FROM users
-            WHERE favorite_category IS NOT NULL
-            GROUP BY favorite_category
-            ORDER BY cnt DESC
-            LIMIT 5
-            """
+            top_categories = await conn.fetch(
+                """
+                SELECT favorite_category, COUNT(*) AS cnt
+                FROM users
+                WHERE favorite_category IS NOT NULL
+                GROUP BY favorite_category
+                ORDER BY cnt DESC
+                LIMIT 5
+                """
+            )
+
+            top_products = await conn.fetch(
+                """
+                SELECT p.name, COUNT(*) AS cnt
+                FROM order_items oi
+                JOIN products p ON oi.product_id = p.id
+                GROUP BY p.name
+                ORDER BY cnt DESC
+                LIMIT 5
+                """
+            )
+
+        text = (
+            "📊 Статистика магазина\n\n"
+            f"👥 Пользователей: {users_count}\n"
+            f"📦 Товаров: {products_count}\n"
+            f"🗂 Категорий: {categories_count}\n"
+            f"❤️ Добавлений в избранное: {favorites_count}\n"
+            f"🧺 Товаров в корзинах: {cart_count}\n"
+            f"📈 Действий пользователей: {actions_count}\n"
+            f"🧾 Заказов: {orders_count}\n"
+            f"💵 Выручка: {revenue} ₸\n"
+            f"🤖 Использований помощника: {assistant_count}\n\n"
+            "🔥 Любимые категории пользователей:\n"
         )
 
-    text = (
-        "📊 Статистика магазина\n\n"
-        f"👥 Пользователей: {users_count}\n"
-        f"📦 Товаров: {products_count}\n"
-        f"🗂 Категорий: {categories_count}\n"
-        f"❤️ Добавлений в избранное: {favorites_count}\n"
-        f"🧺 Товаров в корзинах: {cart_count}\n"
-        f"📈 Действий пользователей: {actions_count}\n\n"
-        "🔥 Любимые категории пользователей:\n"
-    )
+        if top_categories:
+            for item in top_categories:
+                text += f"• {item['favorite_category']} — {item['cnt']}\n"
+        else:
+            text += "Пока нет данных\n"
 
-    if top_categories:
-        for item in top_categories:
-            text += f"• {item['favorite_category']} — {item['cnt']}\n"
-    else:
-        text += "Пока нет данных\n"
+        text += "\n🏆 Топ товаров по заказам:\n"
 
-    await message.answer(text, reply_markup=get_admin_menu())
+        if top_products:
+            for item in top_products:
+                text += f"• {item['name']} — {item['cnt']}\n"
+        else:
+            text += "Пока нет данных\n"
+
+        await message.answer(text, reply_markup=get_admin_menu())
+
+    except Exception as e:
+        await message.answer(
+            f"Ошибка статистики: {e}",
+            reply_markup=get_admin_menu()
+        )
 
 
 @dp.message(F.text == "👥 Пользователи")
@@ -1114,7 +1254,7 @@ async def main():
     pool = await connect()
     await create_tables(pool)
 
-    print("Бот запущен: магазин + админка + поиск + умный помощник")
+    print("Бот запущен: магазин + заказы + история + статистика")
     await dp.start_polling(bot)
 
 

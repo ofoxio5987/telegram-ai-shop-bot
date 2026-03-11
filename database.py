@@ -19,7 +19,6 @@ async def create_tables(pool):
         );
         """)
 
-        # Если таблица users была создана раньше без новых колонок
         await conn.execute("""
         ALTER TABLE users
         ADD COLUMN IF NOT EXISTS budget INTEGER;
@@ -40,7 +39,6 @@ async def create_tables(pool):
         );
         """)
 
-        # Если таблица admins была создана раньше без telegram_id
         await conn.execute("""
         ALTER TABLE admins
         ADD COLUMN IF NOT EXISTS telegram_id BIGINT;
@@ -141,7 +139,7 @@ async def create_tables(pool):
         );
         """)
 
-        # Заполняем категории
+        # Стартовые категории
         categories_count = await conn.fetchval("SELECT COUNT(*) FROM categories;")
 
         if categories_count == 0:
@@ -166,7 +164,7 @@ async def create_tables(pool):
             "SELECT id FROM categories WHERE name = 'Аксессуары';"
         )
 
-        # Заполняем товары
+        # Стартовые товары (цены в тенге)
         products_count = await conn.fetchval("SELECT COUNT(*) FROM products;")
 
         if products_count == 0:
@@ -222,14 +220,12 @@ async def create_tables(pool):
             18
             )
 
-        # Гарантированно создаём/обновляем админа
+        # Админ
         admin_exists = await conn.fetchval(
             "SELECT COUNT(*) FROM admins WHERE login = 'admin';"
         )
 
         if admin_exists == 0:
-            # логин: admin
-            # пароль: admin123
             await conn.execute("""
             INSERT INTO admins (login, password_hash)
             VALUES ('admin', 'admin123');
