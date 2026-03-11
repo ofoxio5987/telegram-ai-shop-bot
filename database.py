@@ -8,16 +8,6 @@ async def connect():
 
 async def create_tables(pool):
     async with pool.acquire() as conn:
-        # ВРЕМЕННЫЙ СБРОС СТАРОЙ СХЕМЫ
-        # НУЖЕН, ЧТОБЫ ТОЧНО ПЕРЕСОЗДАТЬ products/category_id
-        # ПОСЛЕ ТОГО КАК УБЕДИШЬСЯ, ЧТО ВСЁ РАБОТАЕТ, Я ДАМ ТЕБЕ БЕЗОПАСНУЮ ВЕРСИЮ БЕЗ DROP
-        await conn.execute("DROP TABLE IF EXISTS favorites CASCADE;")
-        await conn.execute("DROP TABLE IF EXISTS cart CASCADE;")
-        await conn.execute("DROP TABLE IF EXISTS order_items CASCADE;")
-        await conn.execute("DROP TABLE IF EXISTS orders CASCADE;")
-        await conn.execute("DROP TABLE IF EXISTS products CASCADE;")
-        await conn.execute("DROP TABLE IF EXISTS categories CASCADE;")
-
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS users(
             id SERIAL PRIMARY KEY,
@@ -126,14 +116,16 @@ async def create_tables(pool):
         );
         """)
 
-        # Категории
-        await conn.execute("""
-        INSERT INTO categories (name, description) VALUES
-        ('Электроника', 'Смартфоны, наушники, гаджеты'),
-        ('Одежда', 'Повседневная и стильная одежда'),
-        ('Обувь', 'Кроссовки, ботинки, туфли'),
-        ('Аксессуары', 'Сумки, рюкзаки, часы');
-        """)
+        categories_count = await conn.fetchval("SELECT COUNT(*) FROM categories;")
+
+        if categories_count == 0:
+            await conn.execute("""
+            INSERT INTO categories (name, description) VALUES
+            ('Электроника', 'Смартфоны, наушники, гаджеты'),
+            ('Одежда', 'Повседневная и стильная одежда'),
+            ('Обувь', 'Кроссовки, ботинки, туфли'),
+            ('Аксессуары', 'Сумки, рюкзаки, часы');
+            """)
 
         electronics_id = await conn.fetchval(
             "SELECT id FROM categories WHERE name = 'Электроника';"
@@ -148,60 +140,61 @@ async def create_tables(pool):
             "SELECT id FROM categories WHERE name = 'Аксессуары';"
         )
 
-        # Товары с demo-картинками
-        await conn.execute("""
-        INSERT INTO products (name, description, price, image_url, category_id, stock) VALUES
-        ($1,  $2,  $3,  $4,  $5,  $6),
-        ($7,  $8,  $9,  $10, $11, $12),
-        ($13, $14, $15, $16, $17, $18),
-        ($19, $20, $21, $22, $23, $24),
-        ($25, $26, $27, $28, $29, $30),
-        ($31, $32, $33, $34, $35, $36)
-        """,
-        'Смартфон X1',
-        'Современный смартфон с отличной камерой',
-        120000,
-        'https://placehold.co/600x400/png?text=Smartphone+X1',
-        electronics_id,
-        12,
+        products_count = await conn.fetchval("SELECT COUNT(*) FROM products;")
 
-        'Наушники ProSound',
-        'Беспроводные наушники с шумоподавлением',
-        25000,
-        'https://placehold.co/600x400/png?text=ProSound+Headphones',
-        electronics_id,
-        20,
+        if products_count == 0:
+            await conn.execute("""
+            INSERT INTO products (name, description, price, image_url, category_id, stock) VALUES
+            ($1,  $2,  $3,  $4,  $5,  $6),
+            ($7,  $8,  $9,  $10, $11, $12),
+            ($13, $14, $15, $16, $17, $18),
+            ($19, $20, $21, $22, $23, $24),
+            ($25, $26, $27, $28, $29, $30),
+            ($31, $32, $33, $34, $35, $36)
+            """,
+            'Смартфон X1',
+            'Современный смартфон с отличной камерой',
+            120000,
+            'https://placehold.co/600x400/png?text=Smartphone+X1',
+            electronics_id,
+            12,
 
-        'Умные часы FitTime',
-        'Стильные часы для спорта и повседневной жизни',
-        30000,
-        'https://placehold.co/600x400/png?text=FitTime+Smartwatch',
-        electronics_id,
-        15,
+            'Наушники ProSound',
+            'Беспроводные наушники с шумоподавлением',
+            25000,
+            'https://placehold.co/600x400/png?text=ProSound+Headphones',
+            electronics_id,
+            20,
 
-        'Худи Urban Style',
-        'Комфортное худи на каждый день',
-        18000,
-        'https://placehold.co/600x400/png?text=Urban+Hoodie',
-        clothes_id,
-        10,
+            'Умные часы FitTime',
+            'Стильные часы для спорта и повседневной жизни',
+            30000,
+            'https://placehold.co/600x400/png?text=FitTime+Smartwatch',
+            electronics_id,
+            15,
 
-        'Кроссовки RunFast',
-        'Лёгкие и удобные кроссовки',
-        28000,
-        'https://placehold.co/600x400/png?text=RunFast+Sneakers',
-        shoes_id,
-        8,
+            'Худи Urban Style',
+            'Комфортное худи на каждый день',
+            18000,
+            'https://placehold.co/600x400/png?text=Urban+Hoodie',
+            clothes_id,
+            10,
 
-        'Рюкзак UrbanBag',
-        'Практичный городской рюкзак',
-        15000,
-        'https://placehold.co/600x400/png?text=UrbanBag+Backpack',
-        accessories_id,
-        18
-        )
+            'Кроссовки RunFast',
+            'Лёгкие и удобные кроссовки',
+            28000,
+            'https://placehold.co/600x400/png?text=RunFast+Sneakers',
+            shoes_id,
+            8,
 
-        # Админ
+            'Рюкзак UrbanBag',
+            'Практичный городской рюкзак',
+            15000,
+            'https://placehold.co/600x400/png?text=UrbanBag+Backpack',
+            accessories_id,
+            18
+            )
+
         admin_exists = await conn.fetchval(
             "SELECT COUNT(*) FROM admins WHERE login = 'admin';"
         )
