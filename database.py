@@ -8,6 +8,15 @@ async def connect():
 
 async def create_tables(pool):
     async with pool.acquire() as conn:
+        # ВРЕМЕННЫЙ СБРОС старых таблиц, чтобы новая схема точно применилась
+        # После того как всё заработает, эти DROP TABLE нужно удалить
+        await conn.execute("DROP TABLE IF EXISTS favorites CASCADE;")
+        await conn.execute("DROP TABLE IF EXISTS cart CASCADE;")
+        await conn.execute("DROP TABLE IF EXISTS order_items CASCADE;")
+        await conn.execute("DROP TABLE IF EXISTS orders CASCADE;")
+        await conn.execute("DROP TABLE IF EXISTS products CASCADE;")
+        await conn.execute("DROP TABLE IF EXISTS categories CASCADE;")
+
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS users(
             id SERIAL PRIMARY KEY,
@@ -116,34 +125,53 @@ async def create_tables(pool):
         );
         """)
 
-        categories_count = await conn.fetchval("SELECT COUNT(*) FROM categories;")
+        # Заполняем категории
+        await conn.execute("""
+        INSERT INTO categories (name, description) VALUES
+        ('Электроника', 'Смартфоны, наушники, гаджеты'),
+        ('Одежда', 'Повседневная и стильная одежда'),
+        ('Обувь', 'Кроссовки, ботинки, туфли'),
+        ('Аксессуары', 'Сумки, рюкзаки, часы');
+        """)
 
-        if categories_count == 0:
-            await conn.execute("""
-            INSERT INTO categories (name, description) VALUES
-            ('Электроника', 'Смартфоны, наушники, гаджеты'),
-            ('Одежда', 'Повседневная и стильная одежда'),
-            ('Обувь', 'Кроссовки, ботинки, туфли'),
-            ('Аксессуары', 'Сумки, рюкзаки, часы');
-            """)
+        # Получаем ID категорий
+        electronics_id = await conn.fetchval(
+            "SELECT id FROM categories WHERE name = 'Электроника';"
+        )
+        clothes_id = await conn.fetchval(
+            "SELECT id FROM categories WHERE name = 'Одежда';"
+        )
+        shoes_id = await conn.fetchval(
+            "SELECT id FROM categories WHERE name = 'Обувь';"
+        )
+        accessories_id = await conn.fetchval(
+            "SELECT id FROM categories WHERE name = 'Аксессуары';"
+        )
 
-        products_count = await conn.fetchval("SELECT COUNT(*) FROM products;")
+        # Заполняем товары
+        await conn.execute("""
+        INSERT INTO products (name, description, price, image_url, category_id, stock) VALUES
+        ($1, $2, $3, $4, $5, $6),
+        ($7, $8, $9, $10, $11, $12),
+        ($13, $14, $15, $16, $17, $18),
+        ($19, $20, $21, $22, $23, $24),
+        ($25, $26, $27, $28, $29, $30),
+        ($31, $32, $33, $34, $35, $36)
+        """,
+        'Смартфон X1', 'Современный смартфон с отличной камерой', 120000, '', electronics_id, 12,
+        'Наушники ProSound', 'Беспроводные наушники с шумоподавлением', 25000, '', electronics_id, 20,
+        'Умные часы FitTime', 'Стильные часы для спорта и повседневной жизни', 30000, '', electronics_id, 15,
+        'Худи Urban Style', 'Комфортное худи на каждый день', 18000, '', clothes_id, 10,
+        'Кроссовки RunFast', 'Лёгкие и удобные кроссовки', 28000, '', shoes_id, 8,
+        'Рюкзак UrbanBag', 'Практичный городской рюкзак', 15000, '', accessories_id, 18
+        )
 
-        if products_count == 0:
-            await conn.execute("""
-            INSERT INTO products (name, description, price, image_url, category_id, stock)
-            VALUES
-            ('Смартфон X1', 'Современный смартфон с отличной камерой', 120000, '', 1, 12),
-            ('Наушники ProSound', 'Беспроводные наушники с шумоподавлением', 25000, '', 1, 20),
-            ('Умные часы FitTime', 'Стильные часы для спорта и повседневной жизни', 30000, '', 1, 15),
-            ('Худи Urban Style', 'Комфортное худи на каждый день', 18000, '', 2, 10),
-            ('Кроссовки RunFast', 'Лёгкие и удобные кроссовки', 28000, '', 3, 8),
-            ('Рюкзак UrbanBag', 'Практичный городской рюкзак', 15000, '', 4, 18);
-            """)
+        # Создаём администратора, если его ещё нет
+        admin_exists = await conn.fetchval(
+            "SELECT COUNT(*) FROM admins WHERE login = 'admin';"
+        )
 
-        admin_count = await conn.fetchval("SELECT COUNT(*) FROM admins;")
-
-        if admin_count == 0:
+        if admin_exists == 0:
             # логин: admin
             # пароль: admin123
             await conn.execute("""
