@@ -2,7 +2,7 @@ import asyncio
 import os
 
 from dotenv import load_dotenv
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart
 from aiogram.types import CallbackQuery
 from aiogram.fsm.context import FSMContext
@@ -26,10 +26,10 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN не найден")
+    raise ValueError("BOT_TOKEN не найден в .env")
 
 if not DATABASE_URL:
-    raise ValueError("DATABASE_URL не найден")
+    raise ValueError("DATABASE_URL не найден в .env")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -39,17 +39,21 @@ admin_auth_stage = {}
 admin_auth_data = {}
 
 
+# =========================
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# =========================
+
 async def save_user(message: types.Message):
     async with pool.acquire() as conn:
         await conn.execute(
             """
             INSERT INTO users (telegram_id, first_name, username)
             VALUES ($1, $2, $3)
-            ON CONFLICT (telegram_id) DO NOTHING;
+            ON CONFLICT (telegram_id) DO NOTHING
             """,
             message.from_user.id,
             message.from_user.first_name,
-            message.from_user.username
+            message.from_user.username,
         )
 
 
@@ -63,7 +67,7 @@ async def log_action(telegram_id: int, action_type: str, product_id=None, catego
             telegram_id,
             action_type,
             product_id,
-            category_id
+            category_id,
         )
 
 
@@ -71,7 +75,7 @@ async def is_admin(telegram_id: int) -> bool:
     async with pool.acquire() as conn:
         result = await conn.fetchval(
             "SELECT COUNT(*) FROM admins WHERE telegram_id = $1",
-            telegram_id
+            telegram_id,
         )
     return result > 0
 
@@ -82,7 +86,7 @@ def normalize_priority(raw_text: str) -> str:
     if text in ["цена", "цену", "дешево", "дёшево", "дешевле", "дёшевле", "экономия"]:
         return "цена"
 
-    if text in ["качество", "качеству", "качественный", "лучшее", "лучший"]:
+    if text in ["качество", "качественный", "лучшее", "лучший"]:
         return "качество"
 
     return "универсальность"
@@ -103,7 +107,7 @@ async def send_product_card(message: types.Message, row):
             await message.answer_photo(
                 photo=image_url,
                 caption=caption,
-                reply_markup=product_inline_keyboard(row["id"])
+                reply_markup=product_inline_keyboard(row["id"]),
             )
             return
         except Exception:
@@ -111,7 +115,7 @@ async def send_product_card(message: types.Message, row):
 
     await message.answer(
         caption,
-        reply_markup=product_inline_keyboard(row["id"])
+        reply_markup=product_inline_keyboard(row["id"]),
     )
 
 
@@ -130,7 +134,7 @@ async def send_favorite_card(message: types.Message, row):
             await message.answer_photo(
                 photo=image_url,
                 caption=caption,
-                reply_markup=favorite_inline_keyboard(row["id"])
+                reply_markup=favorite_inline_keyboard(row["id"]),
             )
             return
         except Exception:
@@ -138,7 +142,7 @@ async def send_favorite_card(message: types.Message, row):
 
     await message.answer(
         caption,
-        reply_markup=favorite_inline_keyboard(row["id"])
+        reply_markup=favorite_inline_keyboard(row["id"]),
     )
 
 
@@ -153,13 +157,13 @@ async def show_products_by_category(message: types.Message, category_name: str, 
                 WHERE c.name = $1 AND p.is_active = TRUE
                 ORDER BY p.id
                 """,
-                category_name
+                category_name,
             )
 
         if not rows:
             await message.answer(
                 f"В категории {category_name} пока нет товаров.",
-                reply_markup=get_main_menu()
+                reply_markup=get_main_menu(),
             )
             return
 
@@ -171,22 +175,27 @@ async def show_products_by_category(message: types.Message, category_name: str, 
     except Exception as e:
         await message.answer(
             f"Ошибка при открытии категории: {e}",
-            reply_markup=get_main_menu()
+            reply_markup=get_main_menu(),
         )
 
+
+# =========================
+# СТАРТ
+# =========================
 
 @dp.message(CommandStart())
 async def start(message: types.Message):
     await save_user(message)
-
     await message.answer(
         "🤖 Добро пожаловать в интеллектуальный магазин!\n\n"
         "Теперь вы можете пользоваться меню как в настоящем магазине Telegram 👇",
-        reply_markup=get_main_menu()
+        reply_markup=get_main_menu(),
     )
 
 
-# ---------- ВХОД В АДМИНКУ ----------
+# =========================
+# ВХОД В АДМИНКУ
+# =========================
 
 @dp.message(F.text == "🔐 Админ-вход")
 async def admin_login_start(message: types.Message):
@@ -213,7 +222,7 @@ async def admin_password_input(message: types.Message):
     async with pool.acquire() as conn:
         admin = await conn.fetchrow(
             "SELECT id, login, password_hash FROM admins WHERE login = $1",
-            login
+            login,
         )
 
     if not admin:
@@ -232,7 +241,7 @@ async def admin_password_input(message: types.Message):
         await conn.execute(
             "UPDATE admins SET telegram_id = $1 WHERE login = $2",
             user_id,
-            login
+            login,
         )
 
     admin_auth_stage.pop(user_id, None)
@@ -240,11 +249,13 @@ async def admin_password_input(message: types.Message):
 
     await message.answer(
         "✅ Вход в админ-панель выполнен успешно.",
-        reply_markup=get_admin_menu()
+        reply_markup=get_admin_menu(),
     )
 
 
-# ---------- ПОЛЬЗОВАТЕЛЬСКАЯ ЧАСТЬ ----------
+# =========================
+# ПОЛЬЗОВАТЕЛЬСКАЯ ЧАСТЬ
+# =========================
 
 @dp.message(F.text == "ℹ️ Помощь")
 async def help_handler(message: types.Message):
@@ -259,7 +270,7 @@ async def help_handler(message: types.Message):
         "🤖 Умный помощник — подбор товара\n"
         "👤 Профиль — ваши данные\n"
         "🔐 Админ-вход — вход в админ-панель",
-        reply_markup=get_main_menu()
+        reply_markup=get_main_menu(),
     )
 
 
@@ -271,7 +282,7 @@ async def catalog_handler(message: types.Message):
     if not rows:
         await message.answer(
             "Категории пока не добавлены.",
-            reply_markup=get_main_menu()
+            reply_markup=get_main_menu(),
         )
         return
 
@@ -280,7 +291,7 @@ async def catalog_handler(message: types.Message):
 
     await message.answer(
         "Выберите категорию товаров 👇",
-        reply_markup=build_categories_keyboard(categories)
+        reply_markup=build_categories_keyboard(categories),
     )
 
 
@@ -293,10 +304,10 @@ async def add_to_favorites(callback: CallbackQuery):
             """
             INSERT INTO favorites (telegram_id, product_id)
             VALUES ($1, $2)
-            ON CONFLICT (telegram_id, product_id) DO NOTHING;
+            ON CONFLICT (telegram_id, product_id) DO NOTHING
             """,
             callback.from_user.id,
-            product_id
+            product_id,
         )
 
     await log_action(callback.from_user.id, "add_to_favorite", product_id=product_id)
@@ -314,13 +325,13 @@ async def remove_from_favorites(callback: CallbackQuery):
             WHERE telegram_id = $1 AND product_id = $2
             """,
             callback.from_user.id,
-            product_id
+            product_id,
         )
 
     await callback.answer("Товар удалён из избранного")
     await callback.message.answer(
         "❌ Товар удалён из избранного.",
-        reply_markup=get_main_menu()
+        reply_markup=get_main_menu(),
     )
 
 
@@ -334,10 +345,10 @@ async def add_to_cart(callback: CallbackQuery):
             INSERT INTO cart (telegram_id, product_id, quantity)
             VALUES ($1, $2, 1)
             ON CONFLICT (telegram_id, product_id)
-            DO UPDATE SET quantity = cart.quantity + 1;
+            DO UPDATE SET quantity = cart.quantity + 1
             """,
             callback.from_user.id,
-            product_id
+            product_id,
         )
 
     await log_action(callback.from_user.id, "add_to_cart", product_id=product_id)
@@ -355,13 +366,13 @@ async def favorites_handler(message: types.Message):
             WHERE f.telegram_id = $1
             ORDER BY f.id DESC
             """,
-            message.from_user.id
+            message.from_user.id,
         )
 
     if not rows:
         await message.answer(
             "У вас пока нет избранных товаров.",
-            reply_markup=get_main_menu()
+            reply_markup=get_main_menu(),
         )
         return
 
@@ -382,7 +393,7 @@ async def cart_handler(message: types.Message):
             WHERE c.telegram_id = $1
             ORDER BY c.id DESC
             """,
-            message.from_user.id
+            message.from_user.id,
         )
 
     if not rows:
@@ -411,13 +422,13 @@ async def clear_cart(callback: CallbackQuery):
     async with pool.acquire() as conn:
         await conn.execute(
             "DELETE FROM cart WHERE telegram_id = $1",
-            callback.from_user.id
+            callback.from_user.id,
         )
 
     await callback.answer("Корзина очищена")
     await callback.message.answer(
         "Корзина успешно очищена 🗑",
-        reply_markup=get_main_menu()
+        reply_markup=get_main_menu(),
     )
 
 
@@ -426,18 +437,27 @@ async def checkout_order(callback: CallbackQuery):
     async with pool.acquire() as conn:
         cart_rows = await conn.fetch(
             """
-            SELECT p.id, p.name, p.price, c.quantity
+            SELECT p.id, p.name, p.price, c.quantity, p.stock
             FROM cart c
             JOIN products p ON c.product_id = p.id
             WHERE c.telegram_id = $1
             ORDER BY c.id
             """,
-            callback.from_user.id
+            callback.from_user.id,
         )
 
         if not cart_rows:
             await callback.answer("Корзина пуста")
             return
+
+        for row in cart_rows:
+            if row["stock"] < row["quantity"]:
+                await callback.message.answer(
+                    f"Недостаточно товара на складе: {row['name']}. "
+                    f"Доступно {row['stock']}, в корзине {row['quantity']}.",
+                    reply_markup=get_main_menu(),
+                )
+                return
 
         total_amount = 0
         for row in cart_rows:
@@ -450,7 +470,7 @@ async def checkout_order(callback: CallbackQuery):
             RETURNING id
             """,
             callback.from_user.id,
-            total_amount
+            total_amount,
         )
 
         for row in cart_rows:
@@ -462,22 +482,22 @@ async def checkout_order(callback: CallbackQuery):
                 order_id,
                 row["id"],
                 row["quantity"],
-                row["price"]
+                row["price"],
             )
 
             await conn.execute(
                 """
                 UPDATE products
-                SET stock = GREATEST(stock - $1, 0)
+                SET stock = stock - $1
                 WHERE id = $2
                 """,
                 row["quantity"],
-                row["id"]
+                row["id"],
             )
 
         await conn.execute(
             "DELETE FROM cart WHERE telegram_id = $1",
-            callback.from_user.id
+            callback.from_user.id,
         )
 
     await log_action(callback.from_user.id, "checkout")
@@ -485,7 +505,7 @@ async def checkout_order(callback: CallbackQuery):
     await callback.message.answer(
         f"✅ Заказ №{order_id} успешно оформлен.\n"
         f"Сумма заказа: {total_amount} ₸",
-        reply_markup=get_main_menu()
+        reply_markup=get_main_menu(),
     )
 
 
@@ -500,13 +520,13 @@ async def my_orders_handler(message: types.Message):
             ORDER BY created_at DESC
             LIMIT 10
             """,
-            message.from_user.id
+            message.from_user.id,
         )
 
     if not orders:
         await message.answer(
             "У вас пока нет оформленных заказов.",
-            reply_markup=get_main_menu()
+            reply_markup=get_main_menu(),
         )
         return
 
@@ -531,7 +551,7 @@ async def recommendations_handler(message: types.Message):
             FROM users
             WHERE telegram_id = $1
             """,
-            message.from_user.id
+            message.from_user.id,
         )
 
         if favorite_category:
@@ -544,7 +564,7 @@ async def recommendations_handler(message: types.Message):
                 ORDER BY p.price ASC
                 LIMIT 3
                 """,
-                favorite_category
+                favorite_category,
             )
         else:
             rows = await conn.fetch(
@@ -584,28 +604,28 @@ async def profile_handler(message: types.Message):
             FROM users
             WHERE telegram_id = $1
             """,
-            message.from_user.id
+            message.from_user.id,
         )
 
         favorites_count = await conn.fetchval(
             "SELECT COUNT(*) FROM favorites WHERE telegram_id = $1",
-            message.from_user.id
+            message.from_user.id,
         )
 
         cart_count = await conn.fetchval(
             "SELECT COUNT(*) FROM cart WHERE telegram_id = $1",
-            message.from_user.id
+            message.from_user.id,
         )
 
         orders_count = await conn.fetchval(
             "SELECT COUNT(*) FROM orders WHERE telegram_id = $1",
-            message.from_user.id
+            message.from_user.id,
         )
 
     if not user:
         await message.answer(
             "Профиль не найден. Нажмите /start",
-            reply_markup=get_main_menu()
+            reply_markup=get_main_menu(),
         )
         return
 
@@ -624,11 +644,13 @@ async def profile_handler(message: types.Message):
         f"Товаров в корзине: {cart_count}\n"
         f"Заказов: {orders_count}\n"
         f"Дата регистрации: {user['created_at']}",
-        reply_markup=get_main_menu()
+        reply_markup=get_main_menu(),
     )
 
 
-# ---------- ПОИСК ----------
+# =========================
+# ПОИСК
+# =========================
 
 @dp.message(F.text == "🔍 Поиск")
 async def search_start(message: types.Message, state: FSMContext):
@@ -653,7 +675,7 @@ async def search_process(message: types.Message, state: FSMContext):
             ORDER BY price ASC
             LIMIT 10
             """,
-            f"%{query}%"
+            f"%{query}%",
         )
 
     await log_action(message.from_user.id, "search")
@@ -669,7 +691,9 @@ async def search_process(message: types.Message, state: FSMContext):
         await send_product_card(message, row)
 
 
-# ---------- УМНЫЙ ПОМОЩНИК ----------
+# =========================
+# УМНЫЙ ПОМОЩНИК
+# =========================
 
 @dp.message(F.text == "🤖 Умный помощник")
 async def assistant_start(message: types.Message, state: FSMContext):
@@ -686,10 +710,7 @@ async def assistant_category(message: types.Message, state: FSMContext):
     category = message.text.strip()
     await state.update_data(category=category)
     await state.set_state(AssistantState.waiting_for_budget)
-    await message.answer(
-        "Введите максимальный бюджет в тенге.\n"
-        "Например: 30000"
-    )
+    await message.answer("Введите максимальный бюджет в тенге. Например: 30000")
 
 
 @dp.message(AssistantState.waiting_for_budget)
@@ -722,14 +743,14 @@ async def assistant_finish(message: types.Message, state: FSMContext):
         async with pool.acquire() as conn:
             category_exists = await conn.fetchval(
                 "SELECT id FROM categories WHERE name = $1",
-                category
+                category,
             )
 
             if not category_exists:
                 await state.clear()
                 await message.answer(
                     "Такой категории нет. Попробуйте снова.",
-                    reply_markup=get_main_menu()
+                    reply_markup=get_main_menu(),
                 )
                 return
 
@@ -752,7 +773,7 @@ async def assistant_finish(message: types.Message, state: FSMContext):
                 LIMIT 5
                 """,
                 category,
-                budget
+                budget,
             )
 
             await conn.execute(
@@ -763,7 +784,7 @@ async def assistant_finish(message: types.Message, state: FSMContext):
                 """,
                 budget,
                 category,
-                message.from_user.id
+                message.from_user.id,
             )
 
             await conn.execute(
@@ -774,7 +795,7 @@ async def assistant_finish(message: types.Message, state: FSMContext):
                 message.from_user.id,
                 category,
                 budget,
-                priority
+                priority,
             )
 
         await state.clear()
@@ -783,7 +804,7 @@ async def assistant_finish(message: types.Message, state: FSMContext):
             await message.answer(
                 "🤖 Я не нашёл подходящих товаров по этим параметрам.\n"
                 "Попробуйте увеличить бюджет или выбрать другую категорию.",
-                reply_markup=get_main_menu()
+                reply_markup=get_main_menu(),
             )
             return
 
@@ -792,7 +813,7 @@ async def assistant_finish(message: types.Message, state: FSMContext):
             f"Категория: {category}\n"
             f"Бюджет: до {budget} ₸\n"
             f"Приоритет: {priority}",
-            reply_markup=get_main_menu()
+            reply_markup=get_main_menu(),
         )
 
         for row in rows:
@@ -802,11 +823,13 @@ async def assistant_finish(message: types.Message, state: FSMContext):
         await state.clear()
         await message.answer(
             f"Ошибка в умном помощнике: {e}",
-            reply_markup=get_main_menu()
+            reply_markup=get_main_menu(),
         )
 
 
-# ---------- АДМИН-ПАНЕЛЬ ----------
+# =========================
+# АДМИН-ПАНЕЛЬ
+# =========================
 
 @dp.message(F.text == "📊 Статистика")
 async def admin_stats_handler(message: types.Message):
@@ -881,7 +904,7 @@ async def admin_stats_handler(message: types.Message):
     except Exception as e:
         await message.answer(
             f"Ошибка статистики: {e}",
-            reply_markup=get_admin_menu()
+            reply_markup=get_admin_menu(),
         )
 
 
@@ -946,7 +969,8 @@ async def admin_products_handler(message: types.Message):
             f"💰 {row['price']} ₸\n"
             f"🏷 Категория: {category}\n"
             f"📦 Остаток: {row['stock']}\n"
-            f"📝 {row['description']}\n\n"
+            f"📝 {row['description']}\n"
+            f"🖼 Картинка: {'есть' if row['image_url'] else 'нет'}\n\n"
         )
 
     await message.answer(text, reply_markup=get_admin_menu())
@@ -978,7 +1002,18 @@ async def admin_categories_handler(message: types.Message):
     await message.answer(text, reply_markup=get_admin_menu())
 
 
-# ---------- УПРАВЛЕНИЕ ТОВАРАМИ ----------
+@dp.message(F.text == "667")
+async def admin_667_handler(message: types.Message):
+    if not await is_admin(message.from_user.id):
+        await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
+        return
+
+    await message.answer("667", reply_markup=get_admin_menu())
+
+
+# =========================
+# УПРАВЛЕНИЕ ТОВАРАМИ
+# =========================
 
 @dp.message(F.text == "➕ Добавить товар")
 async def admin_add_product(message: types.Message, state: FSMContext):
@@ -1014,14 +1049,37 @@ async def add_product_price(message: types.Message, state: FSMContext):
 
     await state.update_data(price=price)
     await state.set_state(AddProduct.image_url)
-    await message.answer("Введите ссылку на картинку:")
+    await message.answer(
+        "Отправьте ссылку на картинку или просто загрузите фото товара:"
+    )
+
+
+# ---- ВОТ ГЛАВНОЕ ИЗМЕНЕНИЕ: ПОДДЕРЖКА ФОТО ----
+
+@dp.message(AddProduct.image_url, F.photo)
+async def add_product_image_photo(message: types.Message, state: FSMContext):
+    file_id = message.photo[-1].file_id
+    await state.update_data(image_url=file_id)
+    await state.set_state(AddProduct.category)
+    await message.answer(
+        "Введите категорию точно так: Электроника / Одежда / Обувь / Аксессуары"
+    )
+
+
+@dp.message(AddProduct.image_url, F.text)
+async def add_product_image_text(message: types.Message, state: FSMContext):
+    await state.update_data(image_url=message.text.strip())
+    await state.set_state(AddProduct.category)
+    await message.answer(
+        "Введите категорию точно так: Электроника / Одежда / Обувь / Аксессуары"
+    )
 
 
 @dp.message(AddProduct.image_url)
-async def add_product_image(message: types.Message, state: FSMContext):
-    await state.update_data(image_url=message.text.strip())
-    await state.set_state(AddProduct.category)
-    await message.answer("Введите категорию точно так: Электроника / Одежда / Обувь / Аксессуары")
+async def add_product_image_invalid(message: types.Message):
+    await message.answer(
+        "Отправьте либо ссылку на изображение, либо фотографию товара."
+    )
 
 
 @dp.message(AddProduct.category)
@@ -1044,26 +1102,25 @@ async def add_product_finish(message: types.Message, state: FSMContext):
     async with pool.acquire() as conn:
         category_id = await conn.fetchval(
             "SELECT id FROM categories WHERE name = $1",
-            data["category"]
+            data["category"],
         )
 
         if not category_id:
-            await message.answer("Такой категории нет.")
             await state.clear()
-            await message.answer("Возврат в админ-меню.", reply_markup=get_admin_menu())
+            await message.answer("Такой категории нет.", reply_markup=get_admin_menu())
             return
 
         await conn.execute(
             """
-            INSERT INTO products (name, description, price, image_url, category_id, stock)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO products (name, description, price, image_url, category_id, stock, is_active)
+            VALUES ($1, $2, $3, $4, $5, $6, TRUE)
             """,
             data["name"],
             data["description"],
             data["price"],
             data["image_url"],
             category_id,
-            stock
+            stock,
         )
 
     await state.clear()
@@ -1077,9 +1134,7 @@ async def edit_product_start(message: types.Message, state: FSMContext):
         return
 
     await state.set_state(EditProduct.choose_product)
-    await message.answer(
-        "Введите точное название товара, который хотите изменить:"
-    )
+    await message.answer("Введите точное название товара, который хотите изменить:")
 
 
 @dp.message(EditProduct.choose_product)
@@ -1089,7 +1144,7 @@ async def edit_product_choose(message: types.Message, state: FSMContext):
     async with pool.acquire() as conn:
         exists = await conn.fetchval(
             "SELECT COUNT(*) FROM products WHERE name = $1",
-            product_name
+            product_name,
         )
 
     if exists == 0:
@@ -1109,18 +1164,50 @@ async def edit_product_choose(message: types.Message, state: FSMContext):
 @dp.message(EditProduct.choose_field)
 async def edit_product_field(message: types.Message, state: FSMContext):
     field = message.text.strip().lower()
-
     allowed = ["название", "описание", "цена", "картинка", "остаток", "категория"]
+
     if field not in allowed:
         await message.answer("Введите: название / описание / цена / картинка / остаток / категория")
         return
 
     await state.update_data(field=field)
     await state.set_state(EditProduct.new_value)
-    await message.answer("Введите новое значение:")
+
+    if field == "картинка":
+        await message.answer("Отправьте новую ссылку на изображение или загрузите фото.")
+    else:
+        await message.answer("Введите новое значение:")
 
 
-@dp.message(EditProduct.new_value)
+@dp.message(EditProduct.new_value, F.photo)
+async def edit_product_finish_photo(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    product_name = data["product"]
+    field = data["field"]
+
+    if field != "картинка":
+        await message.answer("Для этого поля нужно ввести текстовое значение.")
+        return
+
+    new_value = message.photo[-1].file_id
+
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "UPDATE products SET image_url = $1 WHERE name = $2",
+            new_value,
+            product_name,
+        )
+
+    await state.clear()
+
+    if result.endswith("0"):
+        await message.answer("Изменение не выполнено.", reply_markup=get_admin_menu())
+        return
+
+    await message.answer("✏️ Товар успешно обновлён.", reply_markup=get_admin_menu())
+
+
+@dp.message(EditProduct.new_value, F.text)
 async def edit_product_finish(message: types.Message, state: FSMContext):
     data = await state.get_data()
     product_name = data["product"]
@@ -1132,14 +1219,16 @@ async def edit_product_finish(message: types.Message, state: FSMContext):
             result = await conn.execute(
                 "UPDATE products SET name = $1 WHERE name = $2",
                 new_value,
-                product_name
+                product_name,
             )
+
         elif field == "описание":
             result = await conn.execute(
                 "UPDATE products SET description = $1 WHERE name = $2",
                 new_value,
-                product_name
+                product_name,
             )
+
         elif field == "цена":
             try:
                 price = int(new_value)
@@ -1150,14 +1239,16 @@ async def edit_product_finish(message: types.Message, state: FSMContext):
             result = await conn.execute(
                 "UPDATE products SET price = $1 WHERE name = $2",
                 price,
-                product_name
+                product_name,
             )
+
         elif field == "картинка":
             result = await conn.execute(
                 "UPDATE products SET image_url = $1 WHERE name = $2",
                 new_value,
-                product_name
+                product_name,
             )
+
         elif field == "остаток":
             try:
                 stock = int(new_value)
@@ -1168,12 +1259,13 @@ async def edit_product_finish(message: types.Message, state: FSMContext):
             result = await conn.execute(
                 "UPDATE products SET stock = $1 WHERE name = $2",
                 stock,
-                product_name
+                product_name,
             )
+
         else:
             category_id = await conn.fetchval(
                 "SELECT id FROM categories WHERE name = $1",
-                new_value
+                new_value,
             )
 
             if not category_id:
@@ -1183,7 +1275,7 @@ async def edit_product_finish(message: types.Message, state: FSMContext):
             result = await conn.execute(
                 "UPDATE products SET category_id = $1 WHERE name = $2",
                 category_id,
-                product_name
+                product_name,
             )
 
     await state.clear()
@@ -1193,6 +1285,17 @@ async def edit_product_finish(message: types.Message, state: FSMContext):
         return
 
     await message.answer("✏️ Товар успешно обновлён.", reply_markup=get_admin_menu())
+
+
+@dp.message(EditProduct.new_value)
+async def edit_product_invalid(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    field = data.get("field")
+
+    if field == "картинка":
+        await message.answer("Отправьте ссылку на изображение или фотографию товара.")
+    else:
+        await message.answer("Введите корректное значение.")
 
 
 @dp.message(F.text == "❌ Удалить товар")
@@ -1212,7 +1315,7 @@ async def delete_product(message: types.Message, state: FSMContext):
     async with pool.acquire() as conn:
         result = await conn.execute(
             "DELETE FROM products WHERE name = $1",
-            product_name
+            product_name,
         )
 
     await state.clear()
@@ -1224,7 +1327,9 @@ async def delete_product(message: types.Message, state: FSMContext):
     await message.answer("🗑 Товар удалён.", reply_markup=get_admin_menu())
 
 
-# ---------- УПРАВЛЕНИЕ КАТЕГОРИЯМИ ----------
+# =========================
+# УПРАВЛЕНИЕ КАТЕГОРИЯМИ
+# =========================
 
 @dp.message(F.text == "➕ Добавить категорию")
 async def admin_add_category_start(message: types.Message, state: FSMContext):
@@ -1250,7 +1355,7 @@ async def add_category_description(message: types.Message, state: FSMContext):
     async with pool.acquire() as conn:
         exists = await conn.fetchval(
             "SELECT COUNT(*) FROM categories WHERE name = $1",
-            data["name"]
+            data["name"],
         )
 
         if exists > 0:
@@ -1264,7 +1369,7 @@ async def add_category_description(message: types.Message, state: FSMContext):
             VALUES ($1, $2)
             """,
             data["name"],
-            message.text.strip()
+            message.text.strip(),
         )
 
     await state.clear()
@@ -1308,7 +1413,7 @@ async def edit_category_finish(message: types.Message, state: FSMContext):
             """,
             data["new_name"],
             message.text.strip(),
-            data["old_name"]
+            data["old_name"],
         )
 
     await state.clear()
@@ -1335,9 +1440,22 @@ async def delete_category_finish(message: types.Message, state: FSMContext):
     category_name = message.text.strip()
 
     async with pool.acquire() as conn:
+        products_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM products WHERE category_id = (SELECT id FROM categories WHERE name = $1)",
+            category_name,
+        )
+
+        if products_count and products_count > 0:
+            await state.clear()
+            await message.answer(
+                "Нельзя удалить категорию, пока в ней есть товары.",
+                reply_markup=get_admin_menu(),
+            )
+            return
+
         result = await conn.execute(
             "DELETE FROM categories WHERE name = $1",
-            category_name
+            category_name,
         )
 
     await state.clear()
@@ -1354,7 +1472,7 @@ async def admin_logout_handler(message: types.Message):
     async with pool.acquire() as conn:
         await conn.execute(
             "UPDATE admins SET telegram_id = NULL WHERE telegram_id = $1",
-            message.from_user.id
+            message.from_user.id,
         )
     await message.answer("Вы вышли из админ-панели.", reply_markup=get_main_menu())
 
@@ -1364,20 +1482,22 @@ async def back_handler(message: types.Message):
     await message.answer("Главное меню 👇", reply_markup=get_main_menu())
 
 
-# ---------- ДИНАМИЧЕСКИЕ КАТЕГОРИИ ----------
+# =========================
+# ДИНАМИЧЕСКИЕ КАТЕГОРИИ
+# =========================
 
 @dp.message()
 async def category_router(message: types.Message):
     async with pool.acquire() as conn:
         exists = await conn.fetchval(
             "SELECT COUNT(*) FROM categories WHERE name = $1",
-            message.text
+            message.text,
         )
 
     if exists == 0:
         await message.answer(
             "Пожалуйста, используйте кнопки ниже 👇",
-            reply_markup=get_main_menu()
+            reply_markup=get_main_menu(),
         )
         return
 
@@ -1385,12 +1505,16 @@ async def category_router(message: types.Message):
     await show_products_by_category(message, message.text, "📦")
 
 
+# =========================
+# ЗАПУСК
+# =========================
+
 async def main():
     global pool
     pool = await connect()
     await create_tables(pool)
 
-    print("Бот запущен: магазин + динамические категории + заказ + редактирование товара")
+    print("Бот запущен")
     await dp.start_polling(bot)
 
 
