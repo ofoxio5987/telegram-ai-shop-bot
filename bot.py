@@ -72,6 +72,18 @@ async def is_admin(telegram_id: int) -> bool:
     return result > 0
 
 
+def normalize_priority(raw_text: str) -> str:
+    text = raw_text.strip().lower()
+
+    if text in ["цена", "цену", "дешево", "дёшево", "дешевле", "дёшевле", "экономия"]:
+        return "цена"
+
+    if text in ["качество", "качеству", "качественный", "лучшее", "лучший"]:
+        return "качество"
+
+    return "универсальность"
+
+
 async def send_product_card(message: types.Message, row):
     caption = (
         f"📦 {row['name']}\n"
@@ -497,7 +509,6 @@ async def search_process(message: types.Message, state: FSMContext):
         )
 
     await log_action(message.from_user.id, "search")
-
     await state.clear()
 
     if not rows:
@@ -552,87 +563,99 @@ async def assistant_budget(message: types.Message, state: FSMContext):
 
 @dp.message(AssistantState.waiting_for_priority)
 async def assistant_finish(message: types.Message, state: FSMContext):
-    priority = message.text.strip().lower()
-    data = await state.get_data()
+    try:
+        raw_priority = message.text.strip()
+        priority = normalize_priority(raw_priority)
+        data = await state.get_data()
 
-    category = data.get("category")
-    budget = data.get("budget")
+        category = data.get("category")
+        budget = data.get("budget")
 
-    async with pool.acquire() as conn:
-        category_exists = await conn.fetchval(
-            "SELECT id FROM categories WHERE name = $1",
-            category
-        )
+        async with pool.acquire() as conn:
+            category_exists = await conn.fetchval(
+                "SELECT id FROM categories WHERE name = $1",
+                category
+            )
 
-        if not category_exists:
-            await state.clear()
-            await message.answer("Такой категории нет. Попробуйте снова.", reply_markup=get_main_menu())
+            if not category_exists:
+                await state.clear()
+                await message.answer(
+                    "Такой категории нет. Попробуйте снова.",
+                    reply_markup=get_main_menu()
+                )
+                return
+
+            if priority == "цена":
+                order_sql = "ORDER BY p.price ASC"
+            elif priority == "качество":
+                order_sql = "ORDER BY p.price DESC"
+            else:
+                order_sql = "ORDER BY p.stock DESC, p.price ASC"
+
+            rows = await conn.fetch(
+                f"""
+                SELECT p.id, p.name, p.description, p.price, p.stock, p.image_url
+                FROM products p
+                JOIN categories c ON p.category_id = c.id
+                WHERE c.name = $1
+                  AND p.price <= $2
+                  AND p.is_active = TRUE
+                {order_sql}
+                LIMIT 5
+                """,
+                category,
+                budget
+            )
+
+            await conn.execute(
+                """
+                UPDATE users
+                SET budget = $1, favorite_category = $2
+                WHERE telegram_id = $3
+                """,
+                budget,
+                category,
+                message.from_user.id
+            )
+
+            await conn.execute(
+                """
+                INSERT INTO assistant_sessions (telegram_id, category, budget_max, priority)
+                VALUES ($1, $2, $3, $4)
+                """,
+                message.from_user.id,
+                category,
+                budget,
+                priority
+            )
+
+        await state.clear()
+
+        if not rows:
+            await message.answer(
+                "🤖 Я не нашёл подходящих товаров по этим параметрам.\n"
+                "Попробуйте увеличить бюджет или выбрать другую категорию.",
+                reply_markup=get_main_menu()
+            )
             return
 
-        if priority == "цена":
-            order_sql = "ORDER BY p.price ASC"
-        elif priority == "качество":
-            order_sql = "ORDER BY p.price DESC"
-        else:
-            order_sql = "ORDER BY p.stock DESC, p.price ASC"
-
-        rows = await conn.fetch(
-            f"""
-            SELECT p.id, p.name, p.description, p.price, p.stock, p.image_url
-            FROM products p
-            JOIN categories c ON p.category_id = c.id
-            WHERE c.name = $1
-              AND p.price <= $2
-              AND p.is_active = TRUE
-            {order_sql}
-            LIMIT 5
-            """,
-            category,
-            budget
-        )
-
-        await conn.execute(
-            """
-            UPDATE users
-            SET budget = $1, favorite_category = $2
-            WHERE telegram_id = $3
-            """,
-            budget,
-            category,
-            message.from_user.id
-        )
-
-        await conn.execute(
-            """
-            INSERT INTO assistant_sessions (telegram_id, category, budget_max, priority)
-            VALUES ($1, $2, $3, $4)
-            """,
-            message.from_user.id,
-            category,
-            budget,
-            priority
-        )
-
-    await state.clear()
-
-    if not rows:
         await message.answer(
-            "🤖 Я не нашёл подходящих товаров по этим параметрам.\n"
-            "Попробуйте увеличить бюджет или выбрать другую категорию.",
+            f"🤖 Подобрал товары по вашим параметрам:\n"
+            f"Категория: {category}\n"
+            f"Бюджет: до {budget} ₸\n"
+            f"Приоритет: {priority}",
             reply_markup=get_main_menu()
         )
-        return
 
-    await message.answer(
-        f"🤖 Подобрал товары по вашим параметрам:\n"
-        f"Категория: {category}\n"
-        f"Бюджет: до {budget} ₸\n"
-        f"Приоритет: {priority}",
-        reply_markup=get_main_menu()
-    )
+        for row in rows:
+            await send_product_card(message, row)
 
-    for row in rows:
-        await send_product_card(message, row)
+    except Exception as e:
+        await state.clear()
+        await message.answer(
+            f"Ошибка в умном помощнике: {e}",
+            reply_markup=get_main_menu()
+        )
 
 
 # ---------- АДМИН-ПАНЕЛЬ ----------
