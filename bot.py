@@ -13,6 +13,7 @@ from keyboards.user_kb import get_main_menu, get_categories_menu
 from keyboards.inline_kb import product_inline_keyboard, cart_inline_keyboard
 from keyboards.admin_kb import get_admin_menu
 from states.admin_states import AdminAuth
+from states.product_states import AddProduct, EditProduct, DeleteProduct
 from services.auth import verify_password
 
 load_dotenv()
@@ -95,7 +96,7 @@ async def show_products_by_category(message: types.Message, category_name: str, 
             caption = (
                 f"📦 {row['name']}\n"
                 f"📝 {row['description']}\n"
-                f"💰 Цена: {row['price']}₽\n"
+                f"💰 Цена: {row['price']} ₸\n"
                 f"📦 В наличии: {row['stock']}"
             )
 
@@ -251,7 +252,7 @@ async def favorites_handler(message: types.Message):
         text += (
             f"📦 {row['name']}\n"
             f"📝 {row['description']}\n"
-            f"💰 {row['price']}₽\n\n"
+            f"💰 {row['price']} ₸\n\n"
         )
 
     await message.answer(text, reply_markup=get_main_menu())
@@ -283,10 +284,10 @@ async def cart_handler(message: types.Message):
         total += item_total
         text += (
             f"📦 {row['name']}\n"
-            f"💰 {row['price']}₽ x {row['quantity']} = {item_total}₽\n\n"
+            f"💰 {row['price']} ₸ x {row['quantity']} = {item_total} ₸\n\n"
         )
 
-    text += f"Итого: {total}₽"
+    text += f"Итого: {total} ₸"
 
     await message.answer(text, reply_markup=cart_inline_keyboard())
     await message.answer("Главное меню 👇", reply_markup=get_main_menu())
@@ -329,7 +330,7 @@ async def recommendations_handler(message: types.Message):
         text += (
             f"📦 {row['name']}\n"
             f"📝 {row['description']}\n"
-            f"💰 {row['price']}₽\n\n"
+            f"💰 {row['price']} ₸\n\n"
         )
 
     await message.answer(text, reply_markup=get_main_menu())
@@ -365,7 +366,7 @@ async def profile_handler(message: types.Message):
         return
 
     username = f"@{user['username']}" if user["username"] else "не указан"
-    budget = user["budget"] if user["budget"] else "не задан"
+    budget = f"{user['budget']} ₸" if user["budget"] else "не задан"
     favorite_category = user["favorite_category"] if user["favorite_category"] else "не определена"
 
     await message.answer(
@@ -437,12 +438,6 @@ async def admin_password_input(message: types.Message, state: FSMContext):
         return
 
     async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            ALTER TABLE admins
-            ADD COLUMN IF NOT EXISTS telegram_id BIGINT
-            """
-        )
         await conn.execute(
             "UPDATE admins SET telegram_id = $1 WHERE login = $2",
             message.from_user.id,
@@ -560,7 +555,7 @@ async def admin_products_handler(message: types.Message):
         category = row["category_name"] if row["category_name"] else "без категории"
         text += (
             f"📦 {row['name']}\n"
-            f"💰 {row['price']}₽\n"
+            f"💰 {row['price']} ₸\n"
             f"🏷 Категория: {category}\n"
             f"📦 Остаток: {row['stock']}\n\n"
         )
@@ -598,51 +593,165 @@ async def admin_categories_handler(message: types.Message):
 
 
 @dp.message(F.text == "➕ Добавить товар")
-async def admin_add_product_placeholder(message: types.Message):
+async def admin_add_product(message: types.Message, state: FSMContext):
     if not await is_admin(message.from_user.id):
         await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
         return
-    await message.answer("Добавление товара сделаем следующим шагом.", reply_markup=get_admin_menu())
+
+    await state.set_state(AddProduct.name)
+    await message.answer("Введите название товара:")
 
 
-@dp.message(F.text == "➕ Добавить категорию")
-async def admin_add_category_placeholder(message: types.Message):
+@dp.message(AddProduct.name)
+async def add_product_name(message: types.Message, state: FSMContext):
+    await state.update_data(name=message.text.strip())
+    await state.set_state(AddProduct.description)
+    await message.answer("Введите описание товара:")
+
+
+@dp.message(AddProduct.description)
+async def add_product_description(message: types.Message, state: FSMContext):
+    await state.update_data(description=message.text.strip())
+    await state.set_state(AddProduct.price)
+    await message.answer("Введите цену товара в тенге:")
+
+
+@dp.message(AddProduct.price)
+async def add_product_price(message: types.Message, state: FSMContext):
+    try:
+        price = int(message.text.strip())
+    except ValueError:
+        await message.answer("Введите цену числом, например: 25000")
+        return
+
+    await state.update_data(price=price)
+    await state.set_state(AddProduct.image_url)
+    await message.answer("Введите ссылку на картинку:")
+
+
+@dp.message(AddProduct.image_url)
+async def add_product_image(message: types.Message, state: FSMContext):
+    await state.update_data(image_url=message.text.strip())
+    await state.set_state(AddProduct.category)
+    await message.answer("Введите категорию точно так: Электроника / Одежда / Обувь / Аксессуары")
+
+
+@dp.message(AddProduct.category)
+async def add_product_category(message: types.Message, state: FSMContext):
+    await state.update_data(category=message.text.strip())
+    await state.set_state(AddProduct.stock)
+    await message.answer("Введите количество на складе:")
+
+
+@dp.message(AddProduct.stock)
+async def add_product_finish(message: types.Message, state: FSMContext):
+    try:
+        stock = int(message.text.strip())
+    except ValueError:
+        await message.answer("Введите количество числом, например: 10")
+        return
+
+    data = await state.get_data()
+
+    async with pool.acquire() as conn:
+        category_id = await conn.fetchval(
+            "SELECT id FROM categories WHERE name = $1",
+            data["category"]
+        )
+
+        if not category_id:
+            await message.answer("Такой категории нет. Проверь название.")
+            await state.clear()
+            await message.answer("Возврат в админ-меню.", reply_markup=get_admin_menu())
+            return
+
+        await conn.execute(
+            """
+            INSERT INTO products (name, description, price, image_url, category_id, stock)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            """,
+            data["name"],
+            data["description"],
+            data["price"],
+            data["image_url"],
+            category_id,
+            stock
+        )
+
+    await state.clear()
+    await message.answer("✅ Товар успешно добавлен.", reply_markup=get_admin_menu())
+
+
+@dp.message(F.text == "✏️ Изменить цену товара")
+async def edit_product_start(message: types.Message, state: FSMContext):
     if not await is_admin(message.from_user.id):
         await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
         return
-    await message.answer("Добавление категории сделаем следующим шагом.", reply_markup=get_admin_menu())
+
+    await state.set_state(EditProduct.choose_product)
+    await message.answer("Введите точное название товара:")
 
 
-@dp.message(F.text == "✏️ Изменить товар")
-async def admin_edit_product_placeholder(message: types.Message):
-    if not await is_admin(message.from_user.id):
-        await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
+@dp.message(EditProduct.choose_product)
+async def edit_product_choose(message: types.Message, state: FSMContext):
+    await state.update_data(product=message.text.strip())
+    await state.set_state(EditProduct.new_price)
+    await message.answer("Введите новую цену в тенге:")
+
+
+@dp.message(EditProduct.new_price)
+async def edit_product_finish(message: types.Message, state: FSMContext):
+    try:
+        new_price = int(message.text.strip())
+    except ValueError:
+        await message.answer("Введите цену числом.")
         return
-    await message.answer("Редактирование товара сделаем следующим шагом.", reply_markup=get_admin_menu())
 
+    data = await state.get_data()
 
-@dp.message(F.text == "✏️ Изменить категорию")
-async def admin_edit_category_placeholder(message: types.Message):
-    if not await is_admin(message.from_user.id):
-        await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "UPDATE products SET price = $1 WHERE name = $2",
+            new_price,
+            data["product"]
+        )
+
+    await state.clear()
+
+    if result.endswith("0"):
+        await message.answer("Товар не найден.", reply_markup=get_admin_menu())
         return
-    await message.answer("Редактирование категории сделаем следующим шагом.", reply_markup=get_admin_menu())
+
+    await message.answer("💰 Цена обновлена.", reply_markup=get_admin_menu())
 
 
 @dp.message(F.text == "❌ Удалить товар")
-async def admin_delete_product_placeholder(message: types.Message):
+async def admin_delete_product(message: types.Message, state: FSMContext):
     if not await is_admin(message.from_user.id):
         await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
         return
-    await message.answer("Удаление товара сделаем следующим шагом.", reply_markup=get_admin_menu())
+
+    await state.set_state(DeleteProduct.choose_product)
+    await message.answer("Введите точное название товара для удаления:")
 
 
-@dp.message(F.text == "❌ Удалить категорию")
-async def admin_delete_category_placeholder(message: types.Message):
-    if not await is_admin(message.from_user.id):
-        await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
+@dp.message(DeleteProduct.choose_product)
+async def delete_product(message: types.Message, state: FSMContext):
+    product_name = message.text.strip()
+
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM products WHERE name = $1",
+            product_name
+        )
+
+    await state.clear()
+
+    if result.endswith("0"):
+        await message.answer("Товар не найден.", reply_markup=get_admin_menu())
         return
-    await message.answer("Удаление категории сделаем следующим шагом.", reply_markup=get_admin_menu())
+
+    await message.answer("🗑 Товар удалён.", reply_markup=get_admin_menu())
 
 
 @dp.message(F.text == "🚪 Выход из админ-панели")
