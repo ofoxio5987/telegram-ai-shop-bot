@@ -5,10 +5,15 @@ from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
 from aiogram.types import CallbackQuery
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.memory import MemoryStorage
 
 from database import connect, create_tables
 from keyboards.user_kb import get_main_menu, get_categories_menu
 from keyboards.inline_kb import product_inline_keyboard, cart_inline_keyboard
+from keyboards.admin_kb import get_admin_menu
+from states.admin_states import AdminAuth
+from services.auth import verify_password
 
 load_dotenv()
 
@@ -22,7 +27,7 @@ if not DATABASE_URL:
     raise ValueError("DATABASE_URL не найден")
 
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+dp = Dispatcher(storage=MemoryStorage())
 pool = None
 
 
@@ -52,6 +57,15 @@ async def log_action(telegram_id: int, action_type: str, product_id=None, catego
             product_id,
             category_id
         )
+
+
+async def is_admin(telegram_id: int) -> bool:
+    async with pool.acquire() as conn:
+        result = await conn.fetchval(
+            "SELECT COUNT(*) FROM admins WHERE telegram_id = $1",
+            telegram_id
+        )
+    return result > 0
 
 
 async def show_products_by_category(message: types.Message, category_name: str, emoji: str):
@@ -385,13 +399,255 @@ async def assistant_handler(message: types.Message):
     )
 
 
+# ---------- АДМИН-ПАНЕЛЬ ----------
+
 @dp.message(F.text == "🔐 Админ-вход")
-async def admin_login_handler(message: types.Message):
+async def admin_login_start(message: types.Message, state: FSMContext):
+    await state.set_state(AdminAuth.waiting_for_login)
+    await message.answer("Введите логин администратора:")
+
+
+@dp.message(AdminAuth.waiting_for_login)
+async def admin_login_input(message: types.Message, state: FSMContext):
+    await state.update_data(login=message.text.strip())
+    await state.set_state(AdminAuth.waiting_for_password)
+    await message.answer("Введите пароль:")
+
+
+@dp.message(AdminAuth.waiting_for_password)
+async def admin_password_input(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    login = data.get("login")
+    password = message.text.strip()
+
+    async with pool.acquire() as conn:
+        admin = await conn.fetchrow(
+            "SELECT id, login, password_hash FROM admins WHERE login = $1",
+            login
+        )
+
+    if not admin:
+        await state.clear()
+        await message.answer("Неверный логин.", reply_markup=get_main_menu())
+        return
+
+    if not verify_password(password, admin["password_hash"]):
+        await state.clear()
+        await message.answer("Неверный пароль.", reply_markup=get_main_menu())
+        return
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            ALTER TABLE admins
+            ADD COLUMN IF NOT EXISTS telegram_id BIGINT
+            """
+        )
+        await conn.execute(
+            "UPDATE admins SET telegram_id = $1 WHERE login = $2",
+            message.from_user.id,
+            login
+        )
+
+    await state.clear()
     await message.answer(
-        "Админ-панель будет следующим этапом.\n"
-        "Скоро добавим вход по логину и паролю, статистику и управление товарами.",
-        reply_markup=get_main_menu()
+        "✅ Вход в админ-панель выполнен успешно.",
+        reply_markup=get_admin_menu()
     )
+
+
+@dp.message(F.text == "📊 Статистика")
+async def admin_stats_handler(message: types.Message):
+    if not await is_admin(message.from_user.id):
+        await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
+        return
+
+    async with pool.acquire() as conn:
+        users_count = await conn.fetchval("SELECT COUNT(*) FROM users")
+        products_count = await conn.fetchval("SELECT COUNT(*) FROM products")
+        categories_count = await conn.fetchval("SELECT COUNT(*) FROM categories")
+        favorites_count = await conn.fetchval("SELECT COUNT(*) FROM favorites")
+        cart_count = await conn.fetchval("SELECT COUNT(*) FROM cart")
+        actions_count = await conn.fetchval("SELECT COUNT(*) FROM user_actions")
+
+        top_products = await conn.fetch(
+            """
+            SELECT p.name, COUNT(*) as cnt
+            FROM user_actions ua
+            JOIN products p ON ua.product_id = p.id
+            WHERE ua.action_type IN ('add_to_cart', 'add_to_favorite')
+            GROUP BY p.name
+            ORDER BY cnt DESC
+            LIMIT 5
+            """
+        )
+
+    text = (
+        "📊 Статистика магазина\n\n"
+        f"👥 Пользователей: {users_count}\n"
+        f"📦 Товаров: {products_count}\n"
+        f"🗂 Категорий: {categories_count}\n"
+        f"❤️ Добавлений в избранное: {favorites_count}\n"
+        f"🧺 Товаров в корзинах: {cart_count}\n"
+        f"📈 Действий пользователей: {actions_count}\n\n"
+        "🔥 Популярные товары:\n"
+    )
+
+    if top_products:
+        for item in top_products:
+            text += f"• {item['name']} — {item['cnt']} действий\n"
+    else:
+        text += "Пока нет данных\n"
+
+    await message.answer(text, reply_markup=get_admin_menu())
+
+
+@dp.message(F.text == "👥 Пользователи")
+async def admin_users_handler(message: types.Message):
+    if not await is_admin(message.from_user.id):
+        await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
+        return
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT first_name, username, telegram_id, created_at
+            FROM users
+            ORDER BY created_at DESC
+            LIMIT 20
+            """
+        )
+
+    if not rows:
+        await message.answer("Пользователей пока нет.", reply_markup=get_admin_menu())
+        return
+
+    text = "👥 Последние пользователи:\n\n"
+    for row in rows:
+        username = f"@{row['username']}" if row["username"] else "не указан"
+        text += (
+            f"Имя: {row['first_name']}\n"
+            f"Username: {username}\n"
+            f"ID: {row['telegram_id']}\n"
+            f"Дата: {row['created_at']}\n\n"
+        )
+
+    await message.answer(text, reply_markup=get_admin_menu())
+
+
+@dp.message(F.text == "📦 Товары")
+async def admin_products_handler(message: types.Message):
+    if not await is_admin(message.from_user.id):
+        await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
+        return
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT p.name, p.price, p.stock, c.name AS category_name
+            FROM products p
+            LEFT JOIN categories c ON p.category_id = c.id
+            ORDER BY p.id
+            """
+        )
+
+    if not rows:
+        await message.answer("Товаров пока нет.", reply_markup=get_admin_menu())
+        return
+
+    text = "📦 Список товаров:\n\n"
+    for row in rows:
+        category = row["category_name"] if row["category_name"] else "без категории"
+        text += (
+            f"📦 {row['name']}\n"
+            f"💰 {row['price']}₽\n"
+            f"🏷 Категория: {category}\n"
+            f"📦 Остаток: {row['stock']}\n\n"
+        )
+
+    await message.answer(text, reply_markup=get_admin_menu())
+
+
+@dp.message(F.text == "🗂 Категории")
+async def admin_categories_handler(message: types.Message):
+    if not await is_admin(message.from_user.id):
+        await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
+        return
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, name, description
+            FROM categories
+            ORDER BY id
+            """
+        )
+
+    if not rows:
+        await message.answer("Категорий пока нет.", reply_markup=get_admin_menu())
+        return
+
+    text = "🗂 Категории:\n\n"
+    for row in rows:
+        text += (
+            f"{row['id']}. {row['name']}\n"
+            f"Описание: {row['description']}\n\n"
+        )
+
+    await message.answer(text, reply_markup=get_admin_menu())
+
+
+@dp.message(F.text == "➕ Добавить товар")
+async def admin_add_product_placeholder(message: types.Message):
+    if not await is_admin(message.from_user.id):
+        await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
+        return
+    await message.answer("Добавление товара сделаем следующим шагом.", reply_markup=get_admin_menu())
+
+
+@dp.message(F.text == "➕ Добавить категорию")
+async def admin_add_category_placeholder(message: types.Message):
+    if not await is_admin(message.from_user.id):
+        await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
+        return
+    await message.answer("Добавление категории сделаем следующим шагом.", reply_markup=get_admin_menu())
+
+
+@dp.message(F.text == "✏️ Изменить товар")
+async def admin_edit_product_placeholder(message: types.Message):
+    if not await is_admin(message.from_user.id):
+        await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
+        return
+    await message.answer("Редактирование товара сделаем следующим шагом.", reply_markup=get_admin_menu())
+
+
+@dp.message(F.text == "✏️ Изменить категорию")
+async def admin_edit_category_placeholder(message: types.Message):
+    if not await is_admin(message.from_user.id):
+        await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
+        return
+    await message.answer("Редактирование категории сделаем следующим шагом.", reply_markup=get_admin_menu())
+
+
+@dp.message(F.text == "❌ Удалить товар")
+async def admin_delete_product_placeholder(message: types.Message):
+    if not await is_admin(message.from_user.id):
+        await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
+        return
+    await message.answer("Удаление товара сделаем следующим шагом.", reply_markup=get_admin_menu())
+
+
+@dp.message(F.text == "❌ Удалить категорию")
+async def admin_delete_category_placeholder(message: types.Message):
+    if not await is_admin(message.from_user.id):
+        await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
+        return
+    await message.answer("Удаление категории сделаем следующим шагом.", reply_markup=get_admin_menu())
+
+
+@dp.message(F.text == "🚪 Выход из админ-панели")
+async def admin_logout_handler(message: types.Message):
+    await message.answer("Вы вышли из админ-панели.", reply_markup=get_main_menu())
 
 
 @dp.message(F.text == "⬅️ Назад")
@@ -412,7 +668,7 @@ async def main():
     pool = await connect()
     await create_tables(pool)
 
-    print("Бот запущен: магазин с картинками, избранным и корзиной")
+    print("Бот запущен: магазин + админ-панель")
     await dp.start_polling(bot)
 
 

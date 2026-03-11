@@ -25,6 +25,7 @@ async def create_tables(pool):
             id SERIAL PRIMARY KEY,
             login TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
+            telegram_id BIGINT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
@@ -200,8 +201,8 @@ async def create_tables(pool):
         )
 
         if admin_exists == 0:
-            # логин: admin
-            # пароль: admin123
+            # Логин: admin
+            # Пароль: admin123
             await conn.execute("""
             INSERT INTO admins (login, password_hash)
             VALUES ('admin', '$2b$12$J1sZlC0M9M1lE8xM8fB0eOQv5rYx0Kk2lE1eM8pQxF4k0A4C4fG8C');
