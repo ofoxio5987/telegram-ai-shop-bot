@@ -6,9 +6,9 @@ def get_main_menu():
         keyboard=[
             [KeyboardButton(text="🛒 Каталог"), KeyboardButton(text="🔍 Поиск")],
             [KeyboardButton(text="❤️ Избранное"), KeyboardButton(text="🧺 Корзина")],
-            [KeyboardButton(text="🎯 Рекомендации"), KeyboardButton(text="🤖 Умный помощник")],
-            [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="ℹ️ Помощь")],
-            [KeyboardButton(text="🔐 Админ-вход")]
+            [KeyboardButton(text="📜 Мои заказы"), KeyboardButton(text="🎯 Рекомендации")],
+            [KeyboardButton(text="🤖 Умный помощник"), KeyboardButton(text="👤 Профиль")],
+            [KeyboardButton(text="ℹ️ Помощь"), KeyboardButton(text="🔐 Админ-вход")]
         ],
         resize_keyboard=True,
         input_field_placeholder="Выберите действие"

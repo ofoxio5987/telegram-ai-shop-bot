@@ -10,7 +10,11 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from database import connect, create_tables
 from keyboards.user_kb import get_main_menu, get_categories_menu
-from keyboards.inline_kb import product_inline_keyboard, cart_inline_keyboard
+from keyboards.inline_kb import (
+    product_inline_keyboard,
+    favorite_inline_keyboard,
+    cart_inline_keyboard,
+)
 from keyboards.admin_kb import get_admin_menu
 from states.product_states import AddProduct, EditProduct, DeleteProduct
 from states.category_states import AddCategory, EditCategory, DeleteCategory
@@ -108,6 +112,33 @@ async def send_product_card(message: types.Message, row):
     await message.answer(
         caption,
         reply_markup=product_inline_keyboard(row["id"])
+    )
+
+
+async def send_favorite_card(message: types.Message, row):
+    caption = (
+        f"📦 {row['name']}\n"
+        f"📝 {row['description']}\n"
+        f"💰 Цена: {row['price']} ₸\n"
+        f"📦 В наличии: {row['stock']}"
+    )
+
+    image_url = row["image_url"]
+
+    if image_url and str(image_url).strip():
+        try:
+            await message.answer_photo(
+                photo=image_url,
+                caption=caption,
+                reply_markup=favorite_inline_keyboard(row["id"])
+            )
+            return
+        except Exception:
+            pass
+
+    await message.answer(
+        caption,
+        reply_markup=favorite_inline_keyboard(row["id"])
     )
 
 
@@ -284,6 +315,27 @@ async def add_to_favorites(callback: CallbackQuery):
     await callback.answer("Товар добавлен в избранное ❤️")
 
 
+@dp.callback_query(F.data.startswith("remove_fav_"))
+async def remove_from_favorites(callback: CallbackQuery):
+    product_id = int(callback.data.split("_")[2])
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            DELETE FROM favorites
+            WHERE telegram_id = $1 AND product_id = $2
+            """,
+            callback.from_user.id,
+            product_id
+        )
+
+    await callback.answer("Товар удалён из избранного")
+    await callback.message.answer(
+        "❌ Товар удалён из избранного.",
+        reply_markup=get_main_menu()
+    )
+
+
 @dp.callback_query(F.data.startswith("cart_"))
 async def add_to_cart(callback: CallbackQuery):
     product_id = int(callback.data.split("_")[1])
@@ -328,7 +380,7 @@ async def favorites_handler(message: types.Message):
     await message.answer("❤️ Ваше избранное:", reply_markup=get_main_menu())
 
     for row in rows:
-        await send_product_card(message, row)
+        await send_favorite_card(message, row)
 
 
 @dp.message(F.text == "🧺 Корзина")
@@ -1337,7 +1389,7 @@ async def main():
     pool = await connect()
     await create_tables(pool)
 
-    print("Бот запущен: магазин + полное редактирование товара")
+    print("Бот запущен: магазин + заказ + редактирование товара")
     await dp.start_polling(bot)
 
 
