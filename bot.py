@@ -55,35 +55,45 @@ async def log_action(telegram_id: int, action_type: str, product_id=None, catego
 
 
 async def show_products_by_category(message: types.Message, category_name: str, emoji: str):
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT p.id, p.name, p.description, p.price, p.stock
-            FROM products p
-            JOIN categories c ON p.category_id = c.id
-            WHERE c.name = $1 AND p.is_active = TRUE
-            ORDER BY p.id
-            """,
-            category_name
-        )
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT p.id, p.name, p.description, p.price, p.stock
+                FROM products p
+                JOIN categories c ON p.category_id = c.id
+                WHERE c.name = $1 AND p.is_active = TRUE
+                ORDER BY p.id
+                """,
+                category_name
+            )
 
-    if not rows:
-        await message.answer("В этой категории пока нет товаров.", reply_markup=get_main_menu())
-        return
+        if not rows:
+            await message.answer(
+                f"В категории {category_name} пока нет товаров.",
+                reply_markup=get_main_menu()
+            )
+            return
 
-    await message.answer(f"{emoji} Категория: {category_name}", reply_markup=get_main_menu())
+        await message.answer(f"{emoji} Категория: {category_name}")
 
-    for row in rows:
-        text = (
-            f"📦 {row['name']}\n"
-            f"📝 {row['description']}\n"
-            f"💰 Цена: {row['price']}₽\n"
-            f"📦 В наличии: {row['stock']}"
-        )
+        for row in rows:
+            text = (
+                f"📦 {row['name']}\n"
+                f"📝 {row['description']}\n"
+                f"💰 Цена: {row['price']}₽\n"
+                f"📦 В наличии: {row['stock']}"
+            )
 
+            await message.answer(
+                text,
+                reply_markup=product_inline_keyboard(row["id"])
+            )
+
+    except Exception as e:
         await message.answer(
-            text,
-            reply_markup=product_inline_keyboard(row["id"])
+            f"Ошибка при открытии категории: {e}",
+            reply_markup=get_main_menu()
         )
 
 
@@ -122,6 +132,7 @@ async def catalog_handler(message: types.Message):
         reply_markup=get_categories_menu()
     )
 
+
 @dp.message(F.text == "📱 Электроника")
 async def electronics_handler(message: types.Message):
     await message.answer("Открываю категорию Электроника...")
@@ -149,6 +160,7 @@ async def accessories_handler(message: types.Message):
     await log_action(message.from_user.id, "open_category")
     await show_products_by_category(message, "Аксессуары", "🎒")
 
+
 @dp.callback_query(F.data.startswith("fav_"))
 async def add_to_favorites(callback: CallbackQuery):
     product_id = int(callback.data.split("_")[1])
@@ -166,7 +178,10 @@ async def add_to_favorites(callback: CallbackQuery):
 
     await log_action(callback.from_user.id, "add_to_favorite", product_id=product_id)
     await callback.answer("Товар добавлен в избранное ❤️")
-    await callback.message.answer("Готово: товар сохранён в избранном.", reply_markup=get_main_menu())
+    await callback.message.answer(
+        "Готово: товар сохранён в избранном.",
+        reply_markup=get_main_menu()
+    )
 
 
 @dp.callback_query(F.data.startswith("cart_"))
@@ -187,7 +202,10 @@ async def add_to_cart(callback: CallbackQuery):
 
     await log_action(callback.from_user.id, "add_to_cart", product_id=product_id)
     await callback.answer("Товар добавлен в корзину 🧺")
-    await callback.message.answer("Готово: товар добавлен в корзину.", reply_markup=get_main_menu())
+    await callback.message.answer(
+        "Готово: товар добавлен в корзину.",
+        reply_markup=get_main_menu()
+    )
 
 
 @dp.message(F.text == "❤️ Избранное")
@@ -205,7 +223,10 @@ async def favorites_handler(message: types.Message):
         )
 
     if not rows:
-        await message.answer("У вас пока нет избранных товаров.", reply_markup=get_main_menu())
+        await message.answer(
+            "У вас пока нет избранных товаров.",
+            reply_markup=get_main_menu()
+        )
         return
 
     text = "❤️ Ваше избранное:\n\n"
@@ -250,10 +271,7 @@ async def cart_handler(message: types.Message):
 
     text += f"Итого: {total}₽"
 
-    await message.answer(
-        text,
-        reply_markup=cart_inline_keyboard()
-    )
+    await message.answer(text, reply_markup=cart_inline_keyboard())
     await message.answer("Главное меню 👇", reply_markup=get_main_menu())
 
 
@@ -266,7 +284,10 @@ async def clear_cart(callback: CallbackQuery):
         )
 
     await callback.answer("Корзина очищена")
-    await callback.message.answer("Корзина успешно очищена 🗑", reply_markup=get_main_menu())
+    await callback.message.answer(
+        "Корзина успешно очищена 🗑",
+        reply_markup=get_main_menu()
+    )
 
 
 @dp.message(F.text == "🎯 Рекомендации")
@@ -288,7 +309,11 @@ async def recommendations_handler(message: types.Message):
 
     text = "🎯 Рекомендации для вас:\n\n"
     for row in rows:
-        text += f"📦 {row['name']}\n📝 {row['description']}\n💰 {row['price']}₽\n\n"
+        text += (
+            f"📦 {row['name']}\n"
+            f"📝 {row['description']}\n"
+            f"💰 {row['price']}₽\n\n"
+        )
 
     await message.answer(text, reply_markup=get_main_menu())
 
@@ -316,7 +341,10 @@ async def profile_handler(message: types.Message):
         )
 
     if not user:
-        await message.answer("Профиль не найден. Нажмите /start", reply_markup=get_main_menu())
+        await message.answer(
+            "Профиль не найден. Нажмите /start",
+            reply_markup=get_main_menu()
+        )
         return
 
     username = f"@{user['username']}" if user["username"] else "не указан"
@@ -339,7 +367,10 @@ async def profile_handler(message: types.Message):
 
 @dp.message(F.text == "🔍 Поиск")
 async def search_handler(message: types.Message):
-    await message.answer("Поиск добавим следующим шагом.", reply_markup=get_main_menu())
+    await message.answer(
+        "Поиск добавим следующим шагом.",
+        reply_markup=get_main_menu()
+    )
 
 
 @dp.message(F.text == "🤖 Умный помощник")
@@ -367,7 +398,10 @@ async def back_handler(message: types.Message):
 
 @dp.message()
 async def fallback(message: types.Message):
-    await message.answer("Пожалуйста, используйте кнопки ниже 👇", reply_markup=get_main_menu())
+    await message.answer(
+        "Пожалуйста, используйте кнопки ниже 👇",
+        reply_markup=get_main_menu()
+    )
 
 
 async def main():
