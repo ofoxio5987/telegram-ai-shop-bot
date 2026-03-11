@@ -4,9 +4,11 @@ import os
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
+from aiogram.types import CallbackQuery
 
 from database import connect, create_tables
 from keyboards.user_kb import get_main_menu, get_categories_menu
+from keyboards.inline_kb import product_inline_keyboard, cart_inline_keyboard
 
 load_dotenv()
 
@@ -52,13 +54,46 @@ async def log_action(telegram_id: int, action_type: str, product_id=None, catego
         )
 
 
+async def show_products_by_category(message: types.Message, category_name: str, emoji: str):
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT p.id, p.name, p.description, p.price, p.stock
+            FROM products p
+            JOIN categories c ON p.category_id = c.id
+            WHERE c.name = $1 AND p.is_active = TRUE
+            ORDER BY p.id
+            """,
+            category_name
+        )
+
+    if not rows:
+        await message.answer("В этой категории пока нет товаров.", reply_markup=get_main_menu())
+        return
+
+    await message.answer(f"{emoji} Категория: {category_name}", reply_markup=get_main_menu())
+
+    for row in rows:
+        text = (
+            f"📦 {row['name']}\n"
+            f"📝 {row['description']}\n"
+            f"💰 Цена: {row['price']}₽\n"
+            f"📦 В наличии: {row['stock']}"
+        )
+
+        await message.answer(
+            text,
+            reply_markup=product_inline_keyboard(row["id"])
+        )
+
+
 @dp.message(CommandStart())
 async def start(message: types.Message):
     await save_user(message)
 
     await message.answer(
         "🤖 Добро пожаловать в интеллектуальный магазин!\n\n"
-        "Я помогу подобрать товары, сохранить избранное, оформить заказ и получить персональные рекомендации.",
+        "Теперь вы можете пользоваться меню как в настоящем магазине Telegram 👇",
         reply_markup=get_main_menu()
     )
 
@@ -74,7 +109,8 @@ async def help_handler(message: types.Message):
         "🎯 Рекомендации — персональные предложения\n"
         "🤖 Умный помощник — подбор товара\n"
         "👤 Профиль — ваши данные\n"
-        "🔐 Админ-вход — вход в админ-панель"
+        "🔐 Админ-вход — вход в админ-панель",
+        reply_markup=get_main_menu()
     )
 
 
@@ -89,105 +125,146 @@ async def catalog_handler(message: types.Message):
 
 @dp.message(F.text == "📱 Электроника")
 async def electronics_handler(message: types.Message):
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT p.name, p.description, p.price
-            FROM products p
-            JOIN categories c ON p.category_id = c.id
-            WHERE c.name = 'Электроника' AND p.is_active = TRUE
-            ORDER BY p.id
-            """
-        )
-
     await log_action(message.from_user.id, "open_category")
-
-    if not rows:
-        await message.answer("В этой категории пока нет товаров.", reply_markup=get_main_menu())
-        return
-
-    text = "📱 Электроника:\n\n"
-    for row in rows:
-        text += f"📦 {row['name']}\n{row['description']}\n💰 {row['price']}₽\n\n"
-
-    await message.answer(text, reply_markup=get_main_menu())
+    await show_products_by_category(message, "Электроника", "📱")
 
 
 @dp.message(F.text == "👕 Одежда")
 async def clothes_handler(message: types.Message):
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT p.name, p.description, p.price
-            FROM products p
-            JOIN categories c ON p.category_id = c.id
-            WHERE c.name = 'Одежда' AND p.is_active = TRUE
-            ORDER BY p.id
-            """
-        )
-
-    if not rows:
-        await message.answer("В этой категории пока нет товаров.", reply_markup=get_main_menu())
-        return
-
-    text = "👕 Одежда:\n\n"
-    for row in rows:
-        text += f"📦 {row['name']}\n{row['description']}\n💰 {row['price']}₽\n\n"
-
-    await message.answer(text, reply_markup=get_main_menu())
+    await log_action(message.from_user.id, "open_category")
+    await show_products_by_category(message, "Одежда", "👕")
 
 
 @dp.message(F.text == "👟 Обувь")
 async def shoes_handler(message: types.Message):
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT p.name, p.description, p.price
-            FROM products p
-            JOIN categories c ON p.category_id = c.id
-            WHERE c.name = 'Обувь' AND p.is_active = TRUE
-            ORDER BY p.id
-            """
-        )
-
-    if not rows:
-        await message.answer("В этой категории пока нет товаров.", reply_markup=get_main_menu())
-        return
-
-    text = "👟 Обувь:\n\n"
-    for row in rows:
-        text += f"📦 {row['name']}\n{row['description']}\n💰 {row['price']}₽\n\n"
-
-    await message.answer(text, reply_markup=get_main_menu())
+    await log_action(message.from_user.id, "open_category")
+    await show_products_by_category(message, "Обувь", "👟")
 
 
 @dp.message(F.text == "🎒 Аксессуары")
 async def accessories_handler(message: types.Message):
+    await log_action(message.from_user.id, "open_category")
+    await show_products_by_category(message, "Аксессуары", "🎒")
+
+
+@dp.callback_query(F.data.startswith("fav_"))
+async def add_to_favorites(callback: CallbackQuery):
+    product_id = int(callback.data.split("_")[1])
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO favorites (telegram_id, product_id)
+            VALUES ($1, $2)
+            ON CONFLICT (telegram_id, product_id) DO NOTHING;
+            """,
+            callback.from_user.id,
+            product_id
+        )
+
+    await log_action(callback.from_user.id, "add_to_favorite", product_id=product_id)
+    await callback.answer("Товар добавлен в избранное ❤️")
+    await callback.message.answer("Готово: товар сохранён в избранном.", reply_markup=get_main_menu())
+
+
+@dp.callback_query(F.data.startswith("cart_"))
+async def add_to_cart(callback: CallbackQuery):
+    product_id = int(callback.data.split("_")[1])
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO cart (telegram_id, product_id, quantity)
+            VALUES ($1, $2, 1)
+            ON CONFLICT (telegram_id, product_id)
+            DO UPDATE SET quantity = cart.quantity + 1;
+            """,
+            callback.from_user.id,
+            product_id
+        )
+
+    await log_action(callback.from_user.id, "add_to_cart", product_id=product_id)
+    await callback.answer("Товар добавлен в корзину 🧺")
+    await callback.message.answer("Готово: товар добавлен в корзину.", reply_markup=get_main_menu())
+
+
+@dp.message(F.text == "❤️ Избранное")
+async def favorites_handler(message: types.Message):
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT p.name, p.description, p.price
-            FROM products p
-            JOIN categories c ON p.category_id = c.id
-            WHERE c.name = 'Аксессуары' AND p.is_active = TRUE
-            ORDER BY p.id
-            """
+            FROM favorites f
+            JOIN products p ON f.product_id = p.id
+            WHERE f.telegram_id = $1
+            ORDER BY f.id DESC
+            """,
+            message.from_user.id
         )
 
     if not rows:
-        await message.answer("В этой категории пока нет товаров.", reply_markup=get_main_menu())
+        await message.answer("У вас пока нет избранных товаров.", reply_markup=get_main_menu())
         return
 
-    text = "🎒 Аксессуары:\n\n"
+    text = "❤️ Ваше избранное:\n\n"
     for row in rows:
-        text += f"📦 {row['name']}\n{row['description']}\n💰 {row['price']}₽\n\n"
+        text += (
+            f"📦 {row['name']}\n"
+            f"📝 {row['description']}\n"
+            f"💰 {row['price']}₽\n\n"
+        )
 
     await message.answer(text, reply_markup=get_main_menu())
 
 
-@dp.message(F.text == "⬅️ Назад")
-async def back_handler(message: types.Message):
+@dp.message(F.text == "🧺 Корзина")
+async def cart_handler(message: types.Message):
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT p.name, p.price, c.quantity
+            FROM cart c
+            JOIN products p ON c.product_id = p.id
+            WHERE c.telegram_id = $1
+            ORDER BY c.id DESC
+            """,
+            message.from_user.id
+        )
+
+    if not rows:
+        await message.answer("Ваша корзина пуста.", reply_markup=get_main_menu())
+        return
+
+    total = 0
+    text = "🧺 Ваша корзина:\n\n"
+
+    for row in rows:
+        item_total = row["price"] * row["quantity"]
+        total += item_total
+        text += (
+            f"📦 {row['name']}\n"
+            f"💰 {row['price']}₽ x {row['quantity']} = {item_total}₽\n\n"
+        )
+
+    text += f"Итого: {total}₽"
+
+    await message.answer(
+        text,
+        reply_markup=cart_inline_keyboard()
+    )
     await message.answer("Главное меню 👇", reply_markup=get_main_menu())
+
+
+@dp.callback_query(F.data == "clear_cart")
+async def clear_cart(callback: CallbackQuery):
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM cart WHERE telegram_id = $1",
+            callback.from_user.id
+        )
+
+    await callback.answer("Корзина очищена")
+    await callback.message.answer("Корзина успешно очищена 🗑", reply_markup=get_main_menu())
 
 
 @dp.message(F.text == "🎯 Рекомендации")
@@ -209,7 +286,7 @@ async def recommendations_handler(message: types.Message):
 
     text = "🎯 Рекомендации для вас:\n\n"
     for row in rows:
-        text += f"📦 {row['name']}\n{row['description']}\n💰 {row['price']}₽\n\n"
+        text += f"📦 {row['name']}\n📝 {row['description']}\n💰 {row['price']}₽\n\n"
 
     await message.answer(text, reply_markup=get_main_menu())
 
@@ -223,6 +300,16 @@ async def profile_handler(message: types.Message):
             FROM users
             WHERE telegram_id = $1
             """,
+            message.from_user.id
+        )
+
+        favorites_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM favorites WHERE telegram_id = $1",
+            message.from_user.id
+        )
+
+        cart_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM cart WHERE telegram_id = $1",
             message.from_user.id
         )
 
@@ -241,31 +328,23 @@ async def profile_handler(message: types.Message):
         f"Username: {username}\n"
         f"Бюджет: {budget}\n"
         f"Любимая категория: {favorite_category}\n"
+        f"Избранных товаров: {favorites_count}\n"
+        f"Товаров в корзине: {cart_count}\n"
         f"Дата регистрации: {user['created_at']}",
         reply_markup=get_main_menu()
     )
 
 
-@dp.message(F.text == "❤️ Избранное")
-async def favorites_handler(message: types.Message):
-    await message.answer("Раздел избранного будет следующим шагом.", reply_markup=get_main_menu())
-
-
-@dp.message(F.text == "🧺 Корзина")
-async def cart_handler(message: types.Message):
-    await message.answer("Раздел корзины будет следующим шагом.", reply_markup=get_main_menu())
-
-
 @dp.message(F.text == "🔍 Поиск")
 async def search_handler(message: types.Message):
-    await message.answer("Поиск товаров добавим следующим шагом.", reply_markup=get_main_menu())
+    await message.answer("Поиск добавим следующим шагом.", reply_markup=get_main_menu())
 
 
 @dp.message(F.text == "🤖 Умный помощник")
 async def assistant_handler(message: types.Message):
     await message.answer(
-        "Умный помощник скоро появится.\n"
-        "Он будет подбирать товары по категории, бюджету и цели покупки.",
+        "Умный помощник будет следующим этапом.\n"
+        "Скоро он будет подбирать товары по бюджету и цели покупки.",
         reply_markup=get_main_menu()
     )
 
@@ -274,9 +353,14 @@ async def assistant_handler(message: types.Message):
 async def admin_login_handler(message: types.Message):
     await message.answer(
         "Админ-панель будет следующим этапом.\n"
-        "Мы добавим вход по логину и паролю, статистику и управление товарами.",
+        "Скоро добавим вход по логину и паролю, статистику и управление товарами.",
         reply_markup=get_main_menu()
     )
+
+
+@dp.message(F.text == "⬅️ Назад")
+async def back_handler(message: types.Message):
+    await message.answer("Главное меню 👇", reply_markup=get_main_menu())
 
 
 @dp.message()
@@ -289,7 +373,7 @@ async def main():
     pool = await connect()
     await create_tables(pool)
 
-    print("Бот запущен: версия каркаса дипломного проекта")
+    print("Бот запущен: магазин с избранным и корзиной")
     await dp.start_polling(bot)
 
 
