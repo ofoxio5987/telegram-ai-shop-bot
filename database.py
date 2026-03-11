@@ -196,14 +196,21 @@ async def create_tables(pool):
             18
             )
 
+        # Гарантированно обновляем админа:
+        # логин: admin
+        # пароль: admin123
         admin_exists = await conn.fetchval(
             "SELECT COUNT(*) FROM admins WHERE login = 'admin';"
         )
 
         if admin_exists == 0:
-            # Логин: admin
-            # Пароль: admin123
             await conn.execute("""
             INSERT INTO admins (login, password_hash)
-            VALUES ('admin', '$2b$12$J1sZlC0M9M1lE8xM8fB0eOQv5rYx0Kk2lE1eM8pQxF4k0A4C4fG8C');
+            VALUES ('admin', 'admin123');
+            """)
+        else:
+            await conn.execute("""
+            UPDATE admins
+            SET password_hash = 'admin123'
+            WHERE login = 'admin';
             """)
