@@ -8,34 +8,45 @@ async def connect():
 
 async def create_tables(pool):
     async with pool.acquire() as conn:
+        # USERS
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS users(
             id SERIAL PRIMARY KEY,
             telegram_id BIGINT UNIQUE NOT NULL,
             first_name TEXT,
             username TEXT,
-            budget INTEGER,
-            favorite_category TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
 
+        # Если таблица users была создана раньше без новых колонок
+        await conn.execute("""
+        ALTER TABLE users
+        ADD COLUMN IF NOT EXISTS budget INTEGER;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE users
+        ADD COLUMN IF NOT EXISTS favorite_category TEXT;
+        """)
+
+        # ADMINS
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS admins(
             id SERIAL PRIMARY KEY,
             login TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
-            telegram_id BIGINT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
 
-        # На случай если таблица admins была создана раньше без telegram_id
+        # Если таблица admins была создана раньше без telegram_id
         await conn.execute("""
         ALTER TABLE admins
         ADD COLUMN IF NOT EXISTS telegram_id BIGINT;
         """)
 
+        # CATEGORIES
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS categories(
             id SERIAL PRIMARY KEY,
@@ -44,6 +55,7 @@ async def create_tables(pool):
         );
         """)
 
+        # PRODUCTS
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS products(
             id SERIAL PRIMARY KEY,
@@ -58,6 +70,7 @@ async def create_tables(pool):
         );
         """)
 
+        # FAVORITES
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS favorites(
             id SERIAL PRIMARY KEY,
@@ -68,6 +81,7 @@ async def create_tables(pool):
         );
         """)
 
+        # CART
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS cart(
             id SERIAL PRIMARY KEY,
@@ -79,6 +93,7 @@ async def create_tables(pool):
         );
         """)
 
+        # ORDERS
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS orders(
             id SERIAL PRIMARY KEY,
@@ -89,6 +104,7 @@ async def create_tables(pool):
         );
         """)
 
+        # ORDER ITEMS
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS order_items(
             id SERIAL PRIMARY KEY,
@@ -99,6 +115,7 @@ async def create_tables(pool):
         );
         """)
 
+        # USER ACTIONS
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS user_actions(
             id SERIAL PRIMARY KEY,
@@ -110,6 +127,7 @@ async def create_tables(pool):
         );
         """)
 
+        # ASSISTANT SESSIONS
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS assistant_sessions(
             id SERIAL PRIMARY KEY,
@@ -123,6 +141,7 @@ async def create_tables(pool):
         );
         """)
 
+        # Заполняем категории
         categories_count = await conn.fetchval("SELECT COUNT(*) FROM categories;")
 
         if categories_count == 0:
@@ -147,6 +166,7 @@ async def create_tables(pool):
             "SELECT id FROM categories WHERE name = 'Аксессуары';"
         )
 
+        # Заполняем товары
         products_count = await conn.fetchval("SELECT COUNT(*) FROM products;")
 
         if products_count == 0:
@@ -202,6 +222,7 @@ async def create_tables(pool):
             18
             )
 
+        # Гарантированно создаём/обновляем админа
         admin_exists = await conn.fetchval(
             "SELECT COUNT(*) FROM admins WHERE login = 'admin';"
         )
@@ -214,7 +235,6 @@ async def create_tables(pool):
             VALUES ('admin', 'admin123');
             """)
         else:
-            # на всякий случай гарантируем правильный пароль
             await conn.execute("""
             UPDATE admins
             SET password_hash = 'admin123'
