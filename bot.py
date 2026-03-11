@@ -14,6 +14,7 @@ from keyboards.inline_kb import product_inline_keyboard, cart_inline_keyboard
 from keyboards.admin_kb import get_admin_menu
 from states.product_states import AddProduct, EditProduct, DeleteProduct
 from states.category_states import AddCategory, EditCategory, DeleteCategory
+from states.assistant_states import SearchState, AssistantState
 
 load_dotenv()
 
@@ -71,6 +72,33 @@ async def is_admin(telegram_id: int) -> bool:
     return result > 0
 
 
+async def send_product_card(message: types.Message, row):
+    caption = (
+        f"📦 {row['name']}\n"
+        f"📝 {row['description']}\n"
+        f"💰 Цена: {row['price']} ₸\n"
+        f"📦 В наличии: {row['stock']}"
+    )
+
+    image_url = row["image_url"]
+
+    if image_url and str(image_url).strip():
+        try:
+            await message.answer_photo(
+                photo=image_url,
+                caption=caption,
+                reply_markup=product_inline_keyboard(row["id"])
+            )
+            return
+        except Exception:
+            pass
+
+    await message.answer(
+        caption,
+        reply_markup=product_inline_keyboard(row["id"])
+    )
+
+
 async def show_products_by_category(message: types.Message, category_name: str, emoji: str):
     try:
         async with pool.acquire() as conn:
@@ -95,32 +123,7 @@ async def show_products_by_category(message: types.Message, category_name: str, 
         await message.answer(f"{emoji} Категория: {category_name}")
 
         for row in rows:
-            caption = (
-                f"📦 {row['name']}\n"
-                f"📝 {row['description']}\n"
-                f"💰 Цена: {row['price']} ₸\n"
-                f"📦 В наличии: {row['stock']}"
-            )
-
-            image_url = row["image_url"]
-
-            if image_url and image_url.strip():
-                try:
-                    await message.answer_photo(
-                        photo=image_url,
-                        caption=caption,
-                        reply_markup=product_inline_keyboard(row["id"])
-                    )
-                except Exception:
-                    await message.answer(
-                        caption,
-                        reply_markup=product_inline_keyboard(row["id"])
-                    )
-            else:
-                await message.answer(
-                    caption,
-                    reply_markup=product_inline_keyboard(row["id"])
-                )
+            await send_product_card(message, row)
 
     except Exception as e:
         await message.answer(
@@ -293,7 +296,7 @@ async def favorites_handler(message: types.Message):
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT p.name, p.description, p.price
+            SELECT p.id, p.name, p.description, p.price, p.stock, p.image_url
             FROM favorites f
             JOIN products p ON f.product_id = p.id
             WHERE f.telegram_id = $1
@@ -309,15 +312,10 @@ async def favorites_handler(message: types.Message):
         )
         return
 
-    text = "❤️ Ваше избранное:\n\n"
-    for row in rows:
-        text += (
-            f"📦 {row['name']}\n"
-            f"📝 {row['description']}\n"
-            f"💰 {row['price']} ₸\n\n"
-        )
+    await message.answer("❤️ Ваше избранное:", reply_markup=get_main_menu())
 
-    await message.answer(text, reply_markup=get_main_menu())
+    for row in rows:
+        await send_product_card(message, row)
 
 
 @dp.message(F.text == "🧺 Корзина")
@@ -373,15 +371,37 @@ async def clear_cart(callback: CallbackQuery):
 @dp.message(F.text == "🎯 Рекомендации")
 async def recommendations_handler(message: types.Message):
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
+        favorite_category = await conn.fetchval(
             """
-            SELECT name, price, description
-            FROM products
-            WHERE is_active = TRUE
-            ORDER BY price ASC
-            LIMIT 3
-            """
+            SELECT favorite_category
+            FROM users
+            WHERE telegram_id = $1
+            """,
+            message.from_user.id
         )
+
+        if favorite_category:
+            rows = await conn.fetch(
+                """
+                SELECT p.name, p.price, p.description
+                FROM products p
+                JOIN categories c ON p.category_id = c.id
+                WHERE c.name = $1 AND p.is_active = TRUE
+                ORDER BY p.price ASC
+                LIMIT 3
+                """,
+                favorite_category
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT name, price, description
+                FROM products
+                WHERE is_active = TRUE
+                ORDER BY price ASC
+                LIMIT 3
+                """
+            )
 
     if not rows:
         await message.answer("Пока нет рекомендаций.", reply_markup=get_main_menu())
@@ -394,6 +414,9 @@ async def recommendations_handler(message: types.Message):
             f"📝 {row['description']}\n"
             f"💰 {row['price']} ₸\n\n"
         )
+
+    if favorite_category:
+        text += f"Подобрано с учетом вашей любимой категории: {favorite_category}"
 
     await message.answer(text, reply_markup=get_main_menu())
 
@@ -445,18 +468,171 @@ async def profile_handler(message: types.Message):
     )
 
 
-@dp.message(F.text == "🔍 Поиск")
-async def search_handler(message: types.Message):
-    await message.answer("Поиск добавим следующим шагом.", reply_markup=get_main_menu())
+# ---------- ПОИСК ----------
 
+@dp.message(F.text == "🔍 Поиск")
+async def search_start(message: types.Message, state: FSMContext):
+    await state.set_state(SearchState.waiting_for_query)
+    await message.answer("Введите название товара или ключевое слово для поиска:")
+
+
+@dp.message(SearchState.waiting_for_query)
+async def search_process(message: types.Message, state: FSMContext):
+    query = message.text.strip()
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, name, description, price, stock, image_url
+            FROM products
+            WHERE is_active = TRUE
+              AND (
+                LOWER(name) LIKE LOWER($1)
+                OR LOWER(description) LIKE LOWER($1)
+              )
+            ORDER BY price ASC
+            LIMIT 10
+            """,
+            f"%{query}%"
+        )
+
+    await log_action(message.from_user.id, "search")
+
+    await state.clear()
+
+    if not rows:
+        await message.answer("По вашему запросу ничего не найдено.", reply_markup=get_main_menu())
+        return
+
+    await message.answer(f"🔍 Найдено товаров: {len(rows)}", reply_markup=get_main_menu())
+
+    for row in rows:
+        await send_product_card(message, row)
+
+
+# ---------- УМНЫЙ ПОМОЩНИК ----------
 
 @dp.message(F.text == "🤖 Умный помощник")
-async def assistant_handler(message: types.Message):
+async def assistant_start(message: types.Message, state: FSMContext):
+    await state.set_state(AssistantState.waiting_for_category)
     await message.answer(
-        "Умный помощник будет следующим этапом.\n"
-        "Скоро он будет подбирать товары по бюджету и цели покупки.",
+        "🤖 Умный помощник поможет подобрать товар.\n\n"
+        "Напишите интересующую категорию:\n"
+        "Электроника / Одежда / Обувь / Аксессуары"
+    )
+
+
+@dp.message(AssistantState.waiting_for_category)
+async def assistant_category(message: types.Message, state: FSMContext):
+    category = message.text.strip()
+    await state.update_data(category=category)
+    await state.set_state(AssistantState.waiting_for_budget)
+    await message.answer(
+        "Введите максимальный бюджет в тенге.\n"
+        "Например: 30000"
+    )
+
+
+@dp.message(AssistantState.waiting_for_budget)
+async def assistant_budget(message: types.Message, state: FSMContext):
+    try:
+        budget = int(message.text.strip())
+    except ValueError:
+        await message.answer("Введите бюджет числом, например: 30000")
+        return
+
+    await state.update_data(budget=budget)
+    await state.set_state(AssistantState.waiting_for_priority)
+    await message.answer(
+        "Что для вас важнее?\n"
+        "Напишите одно слово:\n"
+        "цена / качество / универсальность"
+    )
+
+
+@dp.message(AssistantState.waiting_for_priority)
+async def assistant_finish(message: types.Message, state: FSMContext):
+    priority = message.text.strip().lower()
+    data = await state.get_data()
+
+    category = data.get("category")
+    budget = data.get("budget")
+
+    async with pool.acquire() as conn:
+        category_exists = await conn.fetchval(
+            "SELECT id FROM categories WHERE name = $1",
+            category
+        )
+
+        if not category_exists:
+            await state.clear()
+            await message.answer("Такой категории нет. Попробуйте снова.", reply_markup=get_main_menu())
+            return
+
+        if priority == "цена":
+            order_sql = "ORDER BY p.price ASC"
+        elif priority == "качество":
+            order_sql = "ORDER BY p.price DESC"
+        else:
+            order_sql = "ORDER BY p.stock DESC, p.price ASC"
+
+        rows = await conn.fetch(
+            f"""
+            SELECT p.id, p.name, p.description, p.price, p.stock, p.image_url
+            FROM products p
+            JOIN categories c ON p.category_id = c.id
+            WHERE c.name = $1
+              AND p.price <= $2
+              AND p.is_active = TRUE
+            {order_sql}
+            LIMIT 5
+            """,
+            category,
+            budget
+        )
+
+        await conn.execute(
+            """
+            UPDATE users
+            SET budget = $1, favorite_category = $2
+            WHERE telegram_id = $3
+            """,
+            budget,
+            category,
+            message.from_user.id
+        )
+
+        await conn.execute(
+            """
+            INSERT INTO assistant_sessions (telegram_id, category, budget_max, priority)
+            VALUES ($1, $2, $3, $4)
+            """,
+            message.from_user.id,
+            category,
+            budget,
+            priority
+        )
+
+    await state.clear()
+
+    if not rows:
+        await message.answer(
+            "🤖 Я не нашёл подходящих товаров по этим параметрам.\n"
+            "Попробуйте увеличить бюджет или выбрать другую категорию.",
+            reply_markup=get_main_menu()
+        )
+        return
+
+    await message.answer(
+        f"🤖 Подобрал товары по вашим параметрам:\n"
+        f"Категория: {category}\n"
+        f"Бюджет: до {budget} ₸\n"
+        f"Приоритет: {priority}",
         reply_markup=get_main_menu()
     )
+
+    for row in rows:
+        await send_product_card(message, row)
 
 
 # ---------- АДМИН-ПАНЕЛЬ ----------
@@ -475,6 +651,17 @@ async def admin_stats_handler(message: types.Message):
         cart_count = await conn.fetchval("SELECT COUNT(*) FROM cart")
         actions_count = await conn.fetchval("SELECT COUNT(*) FROM user_actions")
 
+        top_categories = await conn.fetch(
+            """
+            SELECT favorite_category, COUNT(*) AS cnt
+            FROM users
+            WHERE favorite_category IS NOT NULL
+            GROUP BY favorite_category
+            ORDER BY cnt DESC
+            LIMIT 5
+            """
+        )
+
     text = (
         "📊 Статистика магазина\n\n"
         f"👥 Пользователей: {users_count}\n"
@@ -482,8 +669,15 @@ async def admin_stats_handler(message: types.Message):
         f"🗂 Категорий: {categories_count}\n"
         f"❤️ Добавлений в избранное: {favorites_count}\n"
         f"🧺 Товаров в корзинах: {cart_count}\n"
-        f"📈 Действий пользователей: {actions_count}"
+        f"📈 Действий пользователей: {actions_count}\n\n"
+        "🔥 Любимые категории пользователей:\n"
     )
+
+    if top_categories:
+        for item in top_categories:
+            text += f"• {item['favorite_category']} — {item['cnt']}\n"
+    else:
+        text += "Пока нет данных\n"
 
     await message.answer(text, reply_markup=get_admin_menu())
 
@@ -897,7 +1091,7 @@ async def main():
     pool = await connect()
     await create_tables(pool)
 
-    print("Бот запущен: магазин + админка + категории")
+    print("Бот запущен: магазин + админка + поиск + умный помощник")
     await dp.start_polling(bot)
 
 
