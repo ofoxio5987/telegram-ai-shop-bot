@@ -4,7 +4,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 def get_admin_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="👥 Пользователи")],
+            [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="👥 Ползуны")],
             [KeyboardButton(text="📦 Товары"), KeyboardButton(text="🗂 Категории")],
             [KeyboardButton(text="➕ Добавить товар"), KeyboardButton(text="➕ Добавить категорию")],
             [KeyboardButton(text="✏️ Изменить товар"), KeyboardButton(text="✏️ Изменить категорию")],
