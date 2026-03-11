@@ -122,30 +122,32 @@ async def catalog_handler(message: types.Message):
         reply_markup=get_categories_menu()
     )
 
-
 @dp.message(F.text == "📱 Электроника")
 async def electronics_handler(message: types.Message):
+    await message.answer("Открываю категорию Электроника...")
     await log_action(message.from_user.id, "open_category")
     await show_products_by_category(message, "Электроника", "📱")
 
 
 @dp.message(F.text == "👕 Одежда")
 async def clothes_handler(message: types.Message):
+    await message.answer("Открываю категорию Одежда...")
     await log_action(message.from_user.id, "open_category")
     await show_products_by_category(message, "Одежда", "👕")
 
 
 @dp.message(F.text == "👟 Обувь")
 async def shoes_handler(message: types.Message):
+    await message.answer("Открываю категорию Обувь...")
     await log_action(message.from_user.id, "open_category")
     await show_products_by_category(message, "Обувь", "👟")
 
 
 @dp.message(F.text == "🎒 Аксессуары")
 async def accessories_handler(message: types.Message):
+    await message.answer("Открываю категорию Аксессуары...")
     await log_action(message.from_user.id, "open_category")
     await show_products_by_category(message, "Аксессуары", "🎒")
-
 
 @dp.callback_query(F.data.startswith("fav_"))
 async def add_to_favorites(callback: CallbackQuery):
