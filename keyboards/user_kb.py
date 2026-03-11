@@ -10,17 +10,27 @@ def get_main_menu():
             [KeyboardButton(text="🤖 Умный помощник"), KeyboardButton(text="👤 Профиль")],
             [KeyboardButton(text="ℹ️ Помощь"), KeyboardButton(text="🔐 Админ-вход")]
         ],
-        resize_keyboard=True,
-        input_field_placeholder="Выберите действие"
+        resize_keyboard=True
     )
 
 
-def get_categories_menu():
+def build_categories_keyboard(categories):
+    keyboard = []
+
+    row = []
+    for cat in categories:
+        row.append(KeyboardButton(text=cat))
+
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+
+    if row:
+        keyboard.append(row)
+
+    keyboard.append([KeyboardButton(text="⬅️ Назад")])
+
     return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📱 Электроника"), KeyboardButton(text="👕 Одежда")],
-            [KeyboardButton(text="👟 Обувь"), KeyboardButton(text="🎒 Аксессуары")],
-            [KeyboardButton(text="⬅️ Назад")]
-        ],
+        keyboard=keyboard,
         resize_keyboard=True
     )

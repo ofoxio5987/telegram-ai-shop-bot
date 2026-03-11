@@ -9,7 +9,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from database import connect, create_tables
-from keyboards.user_kb import get_main_menu, get_categories_menu
+from keyboards.user_kb import get_main_menu, build_categories_keyboard
 from keyboards.inline_kb import (
     product_inline_keyboard,
     favorite_inline_keyboard,
@@ -142,7 +142,7 @@ async def send_favorite_card(message: types.Message, row):
     )
 
 
-async def show_products_by_category(message: types.Message, category_name: str, emoji: str):
+async def show_products_by_category(message: types.Message, category_name: str, emoji: str = "📦"):
     try:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -265,35 +265,23 @@ async def help_handler(message: types.Message):
 
 @dp.message(F.text == "🛒 Каталог")
 async def catalog_handler(message: types.Message):
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT name FROM categories ORDER BY name")
+
+    if not rows:
+        await message.answer(
+            "Категории пока не добавлены.",
+            reply_markup=get_main_menu()
+        )
+        return
+
+    categories = [row["name"] for row in rows]
     await log_action(message.from_user.id, "open_catalog")
+
     await message.answer(
         "Выберите категорию товаров 👇",
-        reply_markup=get_categories_menu()
+        reply_markup=build_categories_keyboard(categories)
     )
-
-
-@dp.message(F.text == "📱 Электроника")
-async def electronics_handler(message: types.Message):
-    await log_action(message.from_user.id, "open_category")
-    await show_products_by_category(message, "Электроника", "📱")
-
-
-@dp.message(F.text == "👕 Одежда")
-async def clothes_handler(message: types.Message):
-    await log_action(message.from_user.id, "open_category")
-    await show_products_by_category(message, "Одежда", "👕")
-
-
-@dp.message(F.text == "👟 Обувь")
-async def shoes_handler(message: types.Message):
-    await log_action(message.from_user.id, "open_category")
-    await show_products_by_category(message, "Обувь", "👟")
-
-
-@dp.message(F.text == "🎒 Аксессуары")
-async def accessories_handler(message: types.Message):
-    await log_action(message.from_user.id, "open_category")
-    await show_products_by_category(message, "Аксессуары", "🎒")
 
 
 @dp.callback_query(F.data.startswith("fav_"))
@@ -1376,12 +1364,25 @@ async def back_handler(message: types.Message):
     await message.answer("Главное меню 👇", reply_markup=get_main_menu())
 
 
+# ---------- ДИНАМИЧЕСКИЕ КАТЕГОРИИ ----------
+
 @dp.message()
-async def fallback(message: types.Message):
-    await message.answer(
-        "Пожалуйста, используйте кнопки ниже 👇",
-        reply_markup=get_main_menu()
-    )
+async def category_router(message: types.Message):
+    async with pool.acquire() as conn:
+        exists = await conn.fetchval(
+            "SELECT COUNT(*) FROM categories WHERE name = $1",
+            message.text
+        )
+
+    if exists == 0:
+        await message.answer(
+            "Пожалуйста, используйте кнопки ниже 👇",
+            reply_markup=get_main_menu()
+        )
+        return
+
+    await log_action(message.from_user.id, "open_category")
+    await show_products_by_category(message, message.text, "📦")
 
 
 async def main():
@@ -1389,7 +1390,7 @@ async def main():
     pool = await connect()
     await create_tables(pool)
 
-    print("Бот запущен: магазин + заказ + редактирование товара")
+    print("Бот запущен: магазин + динамические категории + заказ + редактирование товара")
     await dp.start_polling(bot)
 
 
