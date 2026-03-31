@@ -1,9 +1,9 @@
 import asyncio
-import json
 import os
 import re
+
 from dotenv import load_dotenv
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart
 from aiogram.types import CallbackQuery
 from aiogram.fsm.context import FSMContext
@@ -21,11 +21,11 @@ from states.product_states import AddProduct, EditProduct, DeleteProduct
 from states.category_states import AddCategory, EditCategory, DeleteCategory
 from states.assistant_states import SearchState, AssistantState
 
+
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
-
 
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не найден")
@@ -33,50 +33,12 @@ if not BOT_TOKEN:
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL не найден")
 
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
+pool = None
 
 admin_auth_stage = {}
 admin_auth_data = {}
-
-def parse_user_request(user_text: str) -> dict:
-    text = user_text.lower()
-
-    if any(word in text for word in ["электроника", "телефон", "гаджет"]):
-        category = "Электроника"
-    elif any(word in text for word in ["одежда", "куртка", "футболка"]):
-        category = "Одежда"
-    elif any(word in text for word in ["обувь", "кроссовки", "ботинки"]):
-        category = "Обувь"
-    elif any(word in text for word in ["аксессуар", "часы", "сумка"]):
-        category = "Аксессуары"
-    else:
-        category = None
-
-    import re
-    budget_match = re.search(r"\d+", text)
-    budget = int(budget_match.group()) if budget_match else None
-
-    if any(word in text for word in ["дешево", "недорого", "дешевый"]):
-        priority = "цена"
-    elif any(word in text for word in ["качественно", "премиум", "дорогой"]):
-        priority = "качество"
-    else:
-        priority = "универсальность"
-
-    if "девушк" in text:
-        target_person = "девушке"
-    elif "мужчин" in text:
-        target_person = "мужчине"
-    elif "ребен" in text:
-        target_person = "ребенку"
-    else:
-        target_person = None
-
-    return {
-        "category": category,
-        "budget": budget,
-        "priority": priority,
-        "target_person": target_person
-    }
 
 
 async def save_user(message: types.Message):
@@ -119,67 +81,93 @@ async def is_admin(telegram_id: int) -> bool:
 def normalize_priority(raw_text: str) -> str:
     text = raw_text.strip().lower()
 
-    if text in ["цена", "цену", "дешево", "дёшево", "дешевле", "дёшевле", "экономия"]:
+    if any(word in text for word in ["цена", "цену", "дешево", "дёшево", "дешевле", "дёшевле", "эконом", "недорого", "бюджет"]):
         return "цена"
 
-    if text in ["качество", "качеству", "качественный", "лучшее", "лучший"]:
+    if any(word in text for word in ["качество", "качеству", "качественный", "лучшее", "лучший", "премиум", "надеж", "надеж", "качествен"]):
         return "качество"
 
     return "универсальность"
 
 
-async def parse_user_request_with_gpt(user_text: str) -> dict:
-    system_prompt = """
-Ты помощник интернет-магазина.
-Твоя задача: извлечь из запроса пользователя параметры для подбора товара.
+def normalize_category(raw_text: str | None) -> str | None:
+    if not raw_text:
+        return None
 
-Верни строго JSON без пояснений.
+    text = raw_text.strip().lower()
 
-Формат:
-{
-  "category": "Электроника" | "Одежда" | "Обувь" | "Аксессуары" | null,
-  "budget": число или null,
-  "priority": "цена" | "качество" | "универсальность",
-  "target_person": строка или null
-}
-
-Правила:
-- category выбирай только из: Электроника, Одежда, Обувь, Аксессуары
-- если категория неясна, ставь null
-- если бюджет не указан, ставь null
-- если приоритет не указан явно:
-  - дешево, недорого -> "цена"
-  - качественно, надежно, премиум -> "качество"
-  - иначе -> "универсальность"
-- target_person — например: "девушке", "мужчине", "ребенку", иначе null
-"""
-
-    response = await client.chat.completions.create(
-        model="gpt-4o-mini",
-        temperature=0,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_text},
+    category_map = {
+        "Электроника": [
+            "электроника", "телефон", "смартфон", "ноутбук", "планшет",
+            "гаджет", "наушник", "колонк", "техника", "электрон"
         ],
-    )
+        "Одежда": [
+            "одежда", "футболк", "кофта", "куртк", "рубашк",
+            "брюк", "джинс", "худи", "плать", "шмот"
+        ],
+        "Обувь": [
+            "обувь", "кроссов", "ботин", "туфл", "сандал",
+            "тапк", "сапог"
+        ],
+        "Аксессуары": [
+            "аксессуар", "часы", "сумк", "рюкзак", "кошелек",
+            "кошелёк", "ремень", "браслет", "украшен"
+        ],
+    }
 
-    content = response.choices[0].message.content.strip()
+    for category, keywords in category_map.items():
+        if text == category.lower():
+            return category
+        if any(keyword in text for keyword in keywords):
+            return category
 
-    try:
-        data = json.loads(content)
-    except json.JSONDecodeError:
-        start = content.find("{")
-        end = content.rfind("}")
-        if start != -1 and end != -1:
-            data = json.loads(content[start:end + 1])
-        else:
-            raise ValueError("GPT вернул невалидный JSON")
+    return None
+
+
+def parse_user_request(user_text: str) -> dict:
+    text = user_text.lower().strip()
+
+    category = normalize_category(text)
+
+    budget = None
+    budget_patterns = [
+        r"до\s*(\d+)",
+        r"бюджет\s*(\d+)",
+        r"(\d+)\s*₸",
+        r"(\d+)\s*тенге",
+        r"(\d{4,})",
+    ]
+    for pattern in budget_patterns:
+        match = re.search(pattern, text)
+        if match:
+            try:
+                budget = int(match.group(1))
+                break
+            except ValueError:
+                budget = None
+
+    priority = normalize_priority(text)
+
+    if "девушк" in text or "жене" in text or "женщин" in text:
+        target_person = "девушке"
+    elif "мужчин" in text or "парню" in text or "мужу" in text:
+        target_person = "мужчине"
+    elif "ребен" in text or "ребён" in text or "дет" in text:
+        target_person = "ребенку"
+    else:
+        target_person = None
+
+    if category is None and "подар" in text:
+        if target_person == "девушке":
+            category = "Аксессуары"
+        elif target_person == "мужчине":
+            category = "Электроника"
 
     return {
-        "category": data.get("category"),
-        "budget": data.get("budget"),
-        "priority": normalize_priority(data.get("priority", "универсальность")),
-        "target_person": data.get("target_person"),
+        "category": category,
+        "budget": budget,
+        "priority": priority,
+        "target_person": target_person,
     }
 
 
@@ -869,7 +857,7 @@ async def assistant_process_request(message: types.Message, state: FSMContext):
                 target_person
             )
 
-        await log_action(message.from_user.id, "assistant_gpt")
+        await log_action(message.from_user.id, "assistant_rule_based")
         await state.clear()
 
         if not rows:
@@ -902,7 +890,7 @@ async def assistant_process_request(message: types.Message, state: FSMContext):
     except Exception as e:
         await state.clear()
         await message.answer(
-            f"Ошибка GPT-помощника: {e}",
+            f"Ошибка в умном помощнике: {e}",
             reply_markup=get_main_menu()
         )
 
@@ -1491,7 +1479,7 @@ async def main():
     pool = await connect()
     await create_tables(pool)
 
-    print("Бот запущен: магазин + динамические категории + заказ + редактирование товара")
+    print("Бот запущен: магазин + rule-based помощник + заказ + редактирование товара")
     await dp.start_polling(bot)
 
 
