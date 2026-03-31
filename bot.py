@@ -578,7 +578,7 @@ async def start(message: types.Message, state: FSMContext):
     await save_user(message)
 
     await message.answer(
-        "🤖 Добро пожаловать в интеллектуальный магазин!\n\n"
+        "🤖 Добро пожаловать в магазин!\n\n"
         "Здесь вы можете искать товары, собирать корзину, оформлять заказы и отслеживать их статус прямо в Telegram 👇",
         reply_markup=get_main_menu()
     )
