@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 
 from dotenv import load_dotenv
@@ -7,6 +8,7 @@ from aiogram.filters import CommandStart
 from aiogram.types import CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
+from openai import AsyncOpenAI
 
 from database import connect, create_tables
 from keyboards.user_kb import get_main_menu, build_categories_keyboard
@@ -24,6 +26,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не найден")
@@ -31,6 +34,10 @@ if not BOT_TOKEN:
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL не найден")
 
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY не найден")
+
+client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 pool = None
@@ -86,6 +93,61 @@ def normalize_priority(raw_text: str) -> str:
         return "качество"
 
     return "универсальность"
+
+
+async def parse_user_request_with_gpt(user_text: str) -> dict:
+    system_prompt = """
+Ты помощник интернет-магазина.
+Твоя задача: извлечь из запроса пользователя параметры для подбора товара.
+
+Верни строго JSON без пояснений.
+
+Формат:
+{
+  "category": "Электроника" | "Одежда" | "Обувь" | "Аксессуары" | null,
+  "budget": число или null,
+  "priority": "цена" | "качество" | "универсальность",
+  "target_person": строка или null
+}
+
+Правила:
+- category выбирай только из: Электроника, Одежда, Обувь, Аксессуары
+- если категория неясна, ставь null
+- если бюджет не указан, ставь null
+- если приоритет не указан явно:
+  - дешево, недорого -> "цена"
+  - качественно, надежно, премиум -> "качество"
+  - иначе -> "универсальность"
+- target_person — например: "девушке", "мужчине", "ребенку", иначе null
+"""
+
+    response = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        temperature=0,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text},
+        ],
+    )
+
+    content = response.choices[0].message.content.strip()
+
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        start = content.find("{")
+        end = content.rfind("}")
+        if start != -1 and end != -1:
+            data = json.loads(content[start:end + 1])
+        else:
+            raise ValueError("GPT вернул невалидный JSON")
+
+    return {
+        "category": data.get("category"),
+        "budget": data.get("budget"),
+        "priority": normalize_priority(data.get("priority", "универсальность")),
+        "target_person": data.get("target_person"),
+    }
 
 
 async def send_product_card(message: types.Message, row):
@@ -673,51 +735,33 @@ async def search_process(message: types.Message, state: FSMContext):
 
 @dp.message(F.text == "🤖 Умный помощник")
 async def assistant_start(message: types.Message, state: FSMContext):
-    await state.set_state(AssistantState.waiting_for_category)
+    await state.set_state(AssistantState.waiting_for_request)
     await message.answer(
-        "🤖 Умный помощник поможет подобрать товар.\n\n"
-        "Напишите интересующую категорию:\n"
-        "Электроника / Одежда / Обувь / Аксессуары"
+        "🤖 Опишите, какой товар вам нужен одним сообщением.\n\n"
+        "Например:\n"
+        "• Нужен подарок девушке до 30000\n"
+        "• Хочу что-то из электроники до 50000, главное качество\n"
+        "• Нужны недорогие аксессуары"
     )
 
 
-@dp.message(AssistantState.waiting_for_category)
-async def assistant_category(message: types.Message, state: FSMContext):
-    category = message.text.strip()
-    await state.update_data(category=category)
-    await state.set_state(AssistantState.waiting_for_budget)
-    await message.answer(
-        "Введите максимальный бюджет в тенге.\n"
-        "Например: 30000"
-    )
-
-
-@dp.message(AssistantState.waiting_for_budget)
-async def assistant_budget(message: types.Message, state: FSMContext):
+@dp.message(AssistantState.waiting_for_request)
+async def assistant_process_request(message: types.Message, state: FSMContext):
     try:
-        budget = int(message.text.strip())
-    except ValueError:
-        await message.answer("Введите бюджет числом, например: 30000")
-        return
+        user_text = message.text.strip()
+        parsed = await parse_user_request_with_gpt(user_text)
 
-    await state.update_data(budget=budget)
-    await state.set_state(AssistantState.waiting_for_priority)
-    await message.answer(
-        "Что для вас важнее?\n"
-        "Напишите одно слово:\n"
-        "цена / качество / универсальность"
-    )
+        category = parsed.get("category")
+        budget = parsed.get("budget")
+        priority = parsed.get("priority")
+        target_person = parsed.get("target_person")
 
-
-@dp.message(AssistantState.waiting_for_priority)
-async def assistant_finish(message: types.Message, state: FSMContext):
-    try:
-        raw_priority = message.text.strip()
-        priority = normalize_priority(raw_priority)
-        data = await state.get_data()
-
-        category = data.get("category")
-        budget = data.get("budget")
+        if not category:
+            await message.answer(
+                "Я не смог точно определить категорию.\n"
+                "Попробуйте указать одну из категорий: Электроника, Одежда, Обувь, Аксессуары."
+            )
+            return
 
         async with pool.acquire() as conn:
             category_exists = await conn.fetchval(
@@ -728,7 +772,7 @@ async def assistant_finish(message: types.Message, state: FSMContext):
             if not category_exists:
                 await state.clear()
                 await message.answer(
-                    "Такой категории нет. Попробуйте снова.",
+                    f"Категория '{category}' не найдена в базе.",
                     reply_markup=get_main_menu()
                 )
                 return
@@ -740,20 +784,34 @@ async def assistant_finish(message: types.Message, state: FSMContext):
             else:
                 order_sql = "ORDER BY p.stock DESC, p.price ASC"
 
-            rows = await conn.fetch(
-                f"""
-                SELECT p.id, p.name, p.description, p.price, p.stock, p.image_url
-                FROM products p
-                JOIN categories c ON p.category_id = c.id
-                WHERE c.name = $1
-                  AND p.price <= $2
-                  AND p.is_active = TRUE
-                {order_sql}
-                LIMIT 5
-                """,
-                category,
-                budget
-            )
+            if budget is not None:
+                rows = await conn.fetch(
+                    f"""
+                    SELECT p.id, p.name, p.description, p.price, p.stock, p.image_url
+                    FROM products p
+                    JOIN categories c ON p.category_id = c.id
+                    WHERE c.name = $1
+                      AND p.price <= $2
+                      AND p.is_active = TRUE
+                    {order_sql}
+                    LIMIT 5
+                    """,
+                    category,
+                    budget
+                )
+            else:
+                rows = await conn.fetch(
+                    f"""
+                    SELECT p.id, p.name, p.description, p.price, p.stock, p.image_url
+                    FROM products p
+                    JOIN categories c ON p.category_id = c.id
+                    WHERE c.name = $1
+                      AND p.is_active = TRUE
+                    {order_sql}
+                    LIMIT 5
+                    """,
+                    category
+                )
 
             await conn.execute(
                 """
@@ -768,30 +826,40 @@ async def assistant_finish(message: types.Message, state: FSMContext):
 
             await conn.execute(
                 """
-                INSERT INTO assistant_sessions (telegram_id, category, budget_max, priority)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO assistant_sessions (telegram_id, category, budget_max, priority, target_person)
+                VALUES ($1, $2, $3, $4, $5)
                 """,
                 message.from_user.id,
                 category,
                 budget,
-                priority
+                priority,
+                target_person
             )
 
+        await log_action(message.from_user.id, "assistant_gpt")
         await state.clear()
 
         if not rows:
+            budget_text = f"до {budget} ₸" if budget is not None else "без ограничения бюджета"
             await message.answer(
-                "🤖 Я не нашёл подходящих товаров по этим параметрам.\n"
-                "Попробуйте увеличить бюджет или выбрать другую категорию.",
+                f"🤖 Я понял запрос так:\n"
+                f"Категория: {category}\n"
+                f"Бюджет: {budget_text}\n"
+                f"Приоритет: {priority}\n\n"
+                "Подходящих товаров не нашлось. Попробуйте увеличить бюджет или изменить запрос.",
                 reply_markup=get_main_menu()
             )
             return
 
+        budget_text = f"до {budget} ₸" if budget is not None else "не указан"
+        target_text = target_person if target_person else "не указан"
+
         await message.answer(
-            f"🤖 Подобрал товары по вашим параметрам:\n"
+            f"🤖 Я понял запрос так:\n"
             f"Категория: {category}\n"
-            f"Бюджет: до {budget} ₸\n"
-            f"Приоритет: {priority}",
+            f"Бюджет: {budget_text}\n"
+            f"Приоритет: {priority}\n"
+            f"Для кого: {target_text}",
             reply_markup=get_main_menu()
         )
 
@@ -801,7 +869,7 @@ async def assistant_finish(message: types.Message, state: FSMContext):
     except Exception as e:
         await state.clear()
         await message.answer(
-            f"Ошибка в умном помощнике: {e}",
+            f"Ошибка GPT-помощника: {e}",
             reply_markup=get_main_menu()
         )
 

@@ -6,6 +6,4 @@ class SearchState(StatesGroup):
 
 
 class AssistantState(StatesGroup):
-    waiting_for_category = State()
-    waiting_for_budget = State()
-    waiting_for_priority = State()
+    waiting_for_request = State()

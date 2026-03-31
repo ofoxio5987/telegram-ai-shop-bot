@@ -2,3 +2,4 @@ aiogram
 asyncpg
 python-dotenv
 bcrypt
+openai>=1.30.0
