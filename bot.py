@@ -431,22 +431,24 @@ async def process_assistant_request(message: types.Message, user_text: str) -> b
 
     if not rows:
         await message.answer(
-            f"🤖 Я понял запрос так:\n"
-            f"Категория: {category}\n"
-            f"Бюджет: {budget_text}\n"
-            f"Приоритет: {priority}\n"
-            f"Для кого: {target_text}\n\n"
-            "Подходящих товаров не нашлось. Попробуйте увеличить бюджет или изменить запрос.",
+            f"🤖 Я обработал ваш запрос:\n"
+            f"• Категория: {category}\n"
+            f"• Бюджет: {budget_text}\n"
+            f"• Приоритет: {priority}\n"
+            f"• Для кого: {target_text}\n\n"
+            "📭 Подходящих товаров пока не нашлось.\n"
+            "Попробуйте увеличить бюджет, изменить категорию или сформулировать запрос чуть иначе.",
             reply_markup=get_main_menu()
         )
         return True
 
     await message.answer(
-        f"🤖 Я понял запрос так:\n"
-        f"Категория: {category}\n"
-        f"Бюджет: {budget_text}\n"
-        f"Приоритет: {priority}\n"
-        f"Для кого: {target_text}",
+        f"🤖 Я подобрал для вас товары по такому запросу:\n"
+        f"• Категория: {category}\n"
+        f"• Бюджет: {budget_text}\n"
+        f"• Приоритет: {priority}\n"
+        f"• Для кого: {target_text}\n\n"
+        "Ниже — наиболее подходящие варианты из каталога 👇",
         reply_markup=get_main_menu()
     )
 
@@ -458,15 +460,16 @@ async def process_assistant_request(message: types.Message, user_text: str) -> b
 
 async def build_order_text(order_row, items_rows):
     text = (
-        f"📦 Заказ №{order_row['id']}\n"
+        f"📦 Заказ №{order_row['id']}\n\n"
         f"📌 Статус: {format_status(order_row['status'])}\n"
         f"💰 Сумма: {order_row['total_amount']} ₸\n"
-        f"🕒 Дата: {order_row['created_at']}\n\n"
-        f"Состав заказа:\n"
+        f"🕒 Дата оформления: {order_row['created_at']}\n\n"
+        f"🧾 Состав заказа:\n"
     )
 
     for item in items_rows:
-        text += f"• {item['name']} — {item['quantity']} шт. × {item['price']} ₸\n"
+        item_total = item['quantity'] * item['price']
+        text += f"• {item['name']} — {item['quantity']} шт. × {item['price']} ₸ = {item_total} ₸\n"
 
     return text
 
@@ -558,7 +561,7 @@ async def show_orders_list(message: types.Message, status_filter: str | None = N
 
     if not orders:
         await message.answer(
-            "Заказы не найдены.",
+            "📭 Заказы не найдены.",
             reply_markup=get_manager_menu() if manager_mode else get_main_menu()
         )
         return
@@ -576,7 +579,7 @@ async def start(message: types.Message, state: FSMContext):
 
     await message.answer(
         "🤖 Добро пожаловать в интеллектуальный магазин!\n\n"
-        "Теперь вы можете пользоваться меню как в настоящем магазине Telegram 👇",
+        "Здесь вы можете искать товары, собирать корзину, оформлять заказы и отслеживать их статус прямо в Telegram 👇",
         reply_markup=get_main_menu()
     )
 
@@ -681,18 +684,20 @@ async def auth_password_input(message: types.Message, state: FSMContext):
 @dp.message(F.text == "ℹ️ Помощь")
 async def help_handler(message: types.Message):
     await message.answer(
-        "📌 Возможности бота:\n\n"
-        "🛒 Каталог — просмотр товаров\n"
-        "🔍 Поиск — поиск по названию\n"
+        "📌 Что умеет бот:\n\n"
+        "🛒 Каталог — просмотр товаров по категориям\n"
+        "🔍 Поиск — быстрый поиск по названию и описанию\n"
         "❤️ Избранное — сохранённые товары\n"
-        "🧺 Корзина — товары к заказу\n"
-        "📜 Мои заказы — история и отслеживание статусов\n"
-        "📦 Отследить заказ — быстро посмотреть текущие статусы\n"
-        "🎯 Рекомендации — персональные предложения\n"
-        "🤖 Умный помощник — можно просто написать, что вам нужно\n"
-        "👤 Профиль — ваши данные\n\n"
-        "Для входа в админ-панель используйте /admin\n"
-        "Для входа в панель менеджера используйте /manager",
+        "🧺 Корзина — подготовка заказа\n"
+        "📜 Мои заказы — история и текущие статусы\n"
+        "📦 Отследить заказ — быстрый доступ к заказам\n"
+        "🎯 Рекомендации — подборка товаров по вашим интересам\n"
+        "🤖 Умный помощник — можно просто написать, что вы хотите купить\n"
+        "👤 Профиль — информация о вашем аккаунте\n\n"
+        "Служебные команды:\n"
+        "/admin — вход в админ-панель\n"
+        "/manager — вход в панель менеджера\n"
+        "/cancel — отменить текущее действие",
         reply_markup=get_main_menu()
     )
 
@@ -706,7 +711,8 @@ async def assistant_hint(message: types.Message):
         return
 
     await message.answer(
-        "🤖 Я всегда активен. Просто напишите, какой товар вам нужен.\n\n"
+        "🤖 Я всегда активен и могу помочь с подбором товара.\n\n"
+        "Просто напишите, что вы ищете, а я подберу подходящие варианты из каталога.\n\n"
         "Например:\n"
         "• Нужен подарок девушке до 30000\n"
         "• Хочу что-то из электроники до 50000, главное качество\n"
@@ -722,7 +728,7 @@ async def catalog_handler(message: types.Message):
 
     if not rows:
         await message.answer(
-            "Категории пока не добавлены.",
+            "🗂 Категории пока не добавлены.\n\nПопробуйте зайти позже.",
             reply_markup=get_main_menu()
         )
         return
@@ -812,7 +818,7 @@ async def favorites_handler(message: types.Message):
 
     if not rows:
         await message.answer(
-            "У вас пока нет избранных товаров.",
+            "❤️ У вас пока нет избранных товаров.\n\nДобавляйте понравившиеся позиции, чтобы быстро вернуться к ним позже.",
             reply_markup=get_main_menu()
         )
         return
@@ -838,7 +844,7 @@ async def cart_handler(message: types.Message):
         )
 
     if not rows:
-        await message.answer("Ваша корзина пуста.", reply_markup=get_main_menu())
+        await message.answer("🧺 Ваша корзина пока пуста.\n\nДобавьте товары из каталога, чтобы оформить заказ.", reply_markup=get_main_menu())
         return
 
     total = 0
@@ -935,9 +941,12 @@ async def checkout_order(callback: CallbackQuery):
     await log_action(callback.from_user.id, "checkout")
     await callback.answer("Заказ оформлен")
     await callback.message.answer(
-        f"✅ Заказ №{order_id} успешно оформлен.\n"
-        f"Сумма заказа: {total_amount} ₸\n"
-        f"Статус: {format_status('registered')}",
+        f"✅ Заказ успешно оформлен!\n\n"
+        f"📦 Номер заказа: {order_id}\n"
+        f"💰 Сумма: {total_amount} ₸\n"
+        f"📌 Текущий статус: {format_status('registered')}\n\n"
+        "⏳ Заказ ожидает обработки менеджером.\n"
+        "Вы можете отслеживать его в разделе «Мои заказы».",
         reply_markup=get_main_menu()
     )
 
@@ -978,7 +987,8 @@ async def user_cancel_order(callback: CallbackQuery):
     await log_action(callback.from_user.id, "user_cancel_order")
     await callback.answer("Заказ отменён")
     await callback.message.answer(
-        f"❌ Ваш заказ №{order_id} отменён.",
+        f"❌ Заказ №{order_id} отменён.\n\n"
+        "Если это произошло случайно, вы можете оформить новый заказ в каталоге.",
         reply_markup=get_main_menu()
     )
 
@@ -1065,7 +1075,7 @@ async def profile_handler(message: types.Message):
 
     if not user:
         await message.answer(
-            "Профиль не найден. Нажмите /start",
+            "👤 Профиль пока не найден.\n\nНажмите /start, чтобы бот зарегистрировал вас в системе.",
             reply_markup=get_main_menu()
         )
         return
@@ -1092,7 +1102,7 @@ async def profile_handler(message: types.Message):
 @dp.message(F.text == "🔍 Поиск")
 async def search_start(message: types.Message, state: FSMContext):
     await state.set_state(SearchState.waiting_for_query)
-    await message.answer("Введите название товара или ключевое слово для поиска:")
+    await message.answer("🔍 Введите название товара или ключевое слово для поиска:")
 
 
 @dp.message(SearchState.waiting_for_query)
@@ -1119,7 +1129,7 @@ async def search_process(message: types.Message, state: FSMContext):
     await state.clear()
 
     if not rows:
-        await message.answer("По вашему запросу ничего не найдено.", reply_markup=get_main_menu())
+        await message.answer("🔎 По вашему запросу ничего не найдено.\n\nПопробуйте изменить формулировку или использовать другое ключевое слово.", reply_markup=get_main_menu())
         return
 
     await message.answer(f"🔍 Найдено товаров: {len(rows)}", reply_markup=get_main_menu())
@@ -1270,7 +1280,8 @@ async def manager_change_order_status(callback: CallbackQuery):
 
     await callback.answer(f"Статус обновлён: {format_status(new_status)}")
     await callback.message.answer(
-        f"✅ Заказ №{order_id} переведён в статус: {format_status(new_status)}",
+        f"✅ Статус заказа №{order_id} обновлён.\n\n"
+        f"📌 Новый статус: {format_status(new_status)}",
         reply_markup=get_manager_menu()
     )
 
@@ -1279,7 +1290,9 @@ async def manager_change_order_status(callback: CallbackQuery):
     try:
         await bot.send_message(
             order_row["telegram_id"],
-            f"📦 Статус вашего заказа №{order_id} обновлён: {format_status(new_status)}"
+            f"📦 Обновление по заказу №{order_id}\n\n"
+            f"📌 Новый статус: {format_status(new_status)}\n\n"
+            "Проверить детали заказа можно в разделе «Мои заказы»."
         )
     except Exception:
         pass
@@ -2032,11 +2045,11 @@ async def category_or_assistant_router(message: types.Message, state: FSMContext
         return
 
     if await is_admin(message.from_user.id):
-        await message.answer("Используйте кнопки админ-меню 👇", reply_markup=get_admin_menu())
+        await message.answer("🛠 Вы сейчас в админ-панели. Используйте кнопки ниже 👇", reply_markup=get_admin_menu())
         return
 
     if await is_manager(message.from_user.id):
-        await message.answer("Используйте кнопки панели менеджера 👇", reply_markup=get_manager_menu())
+        await message.answer("📦 Вы сейчас в панели менеджера. Используйте кнопки ниже 👇", reply_markup=get_manager_menu())
         return
 
     async with pool.acquire() as conn:
@@ -2055,7 +2068,7 @@ async def category_or_assistant_router(message: types.Message, state: FSMContext
         return
 
     await message.answer(
-        "Я не смог точно понять запрос.\n"
+        "🤔 Я не смог точно понять запрос.\n\n"
         "Попробуйте написать, например:\n"
         "• Нужна электроника до 50000\n"
         "• Хочу недорогие аксессуары\n"
