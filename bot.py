@@ -20,7 +20,7 @@ from keyboards.admin_kb import get_admin_menu
 from keyboards.manager_kb import get_manager_menu
 from states.product_states import AddProduct, EditProduct, DeleteProduct
 from states.category_states import AddCategory, EditCategory, DeleteCategory
-from states.assistant_states import SearchState
+from states.assistant_states import SearchState, ManagerOrderSearchState
 
 
 load_dotenv()
@@ -41,19 +41,45 @@ pool = None
 auth_stage = {}
 auth_data = {}
 
-
 ORDER_STATUS_LABELS = {
-    "new": "🆕 Новый",
-    "processing": "🛠 В обработке",
-    "confirmed": "✅ Подтверждён",
-    "shipped": "🚚 Отправлен",
-    "delivered": "📦 Доставлен",
+    "registered": "📝 На регистрации",
+    "active": "🟢 Активный",
+    "completed": "✅ Выполнен",
     "cancelled": "❌ Отменён",
 }
 
 
 def format_status(status: str) -> str:
     return ORDER_STATUS_LABELS.get(status, status)
+
+
+def build_user_order_keyboard(order_id: int, status: str):
+    buttons = []
+    if status in {"registered", "active"}:
+        buttons.append([
+            InlineKeyboardButton(text="❌ Отменить заказ", callback_data=f"usercancel_{order_id}")
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
+
+
+def build_order_manage_keyboard(order_id: int, status: str):
+    buttons = []
+
+    if status == "registered":
+        buttons.append([
+            InlineKeyboardButton(text="🟢 Активный", callback_data=f"orderstatus_{order_id}_active"),
+            InlineKeyboardButton(text="❌ Отменить", callback_data=f"orderstatus_{order_id}_cancelled"),
+        ])
+    elif status == "active":
+        buttons.append([
+            InlineKeyboardButton(text="📝 На регистрацию", callback_data=f"orderstatus_{order_id}_registered"),
+            InlineKeyboardButton(text="✅ Выполнен", callback_data=f"orderstatus_{order_id}_completed"),
+        ])
+        buttons.append([
+            InlineKeyboardButton(text="❌ Отменить", callback_data=f"orderstatus_{order_id}_cancelled")
+        ])
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
 
 
 async def save_user(message: types.Message):
@@ -193,38 +219,6 @@ def parse_user_request(user_text: str) -> dict:
         "priority": priority,
         "target_person": target_person,
     }
-
-
-def build_order_manage_keyboard(order_id: int, status: str):
-    buttons = []
-
-    if status == "new":
-        buttons.append([
-            InlineKeyboardButton(text="🛠 В обработку", callback_data=f"orderstatus_{order_id}_processing"),
-            InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"orderstatus_{order_id}_confirmed"),
-        ])
-        buttons.append([
-            InlineKeyboardButton(text="❌ Отменить", callback_data=f"orderstatus_{order_id}_cancelled")
-        ])
-    elif status == "processing":
-        buttons.append([
-            InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"orderstatus_{order_id}_confirmed"),
-            InlineKeyboardButton(text="❌ Отменить", callback_data=f"orderstatus_{order_id}_cancelled"),
-        ])
-    elif status == "confirmed":
-        buttons.append([
-            InlineKeyboardButton(text="🚚 Отправить", callback_data=f"orderstatus_{order_id}_shipped"),
-            InlineKeyboardButton(text="❌ Отменить", callback_data=f"orderstatus_{order_id}_cancelled"),
-        ])
-    elif status == "shipped":
-        buttons.append([
-            InlineKeyboardButton(text="📦 Доставлен", callback_data=f"orderstatus_{order_id}_delivered")
-        ])
-
-    if not buttons:
-        return None
-
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 async def send_product_card(message: types.Message, row):
@@ -438,9 +432,7 @@ async def build_order_text(order_row, items_rows):
     )
 
     for item in items_rows:
-        text += (
-            f"• {item['name']} — {item['quantity']} шт. × {item['price']} ₸\n"
-        )
+        text += f"• {item['name']} — {item['quantity']} шт. × {item['price']} ₸\n"
 
     return text
 
@@ -478,7 +470,7 @@ async def send_order_details(message: types.Message, order_id: int, manager_mode
 
     await message.answer(
         text,
-        reply_markup=build_order_manage_keyboard(order_row["id"], order_row["status"]) if manager_mode else None
+        reply_markup=build_order_manage_keyboard(order_row["id"], order_row["status"]) if manager_mode else build_user_order_keyboard(order_row["id"], order_row["status"])
     )
 
 
@@ -488,7 +480,7 @@ async def show_orders_list(message: types.Message, status_filter: str | None = N
             if status_filter:
                 orders = await conn.fetch(
                     """
-                    SELECT id, telegram_id, total_amount, status, created_at
+                    SELECT id
                     FROM orders
                     WHERE status = $1
                     ORDER BY created_at DESC
@@ -499,7 +491,7 @@ async def show_orders_list(message: types.Message, status_filter: str | None = N
             else:
                 orders = await conn.fetch(
                     """
-                    SELECT id, telegram_id, total_amount, status, created_at
+                    SELECT id
                     FROM orders
                     ORDER BY created_at DESC
                     LIMIT 15
@@ -509,7 +501,7 @@ async def show_orders_list(message: types.Message, status_filter: str | None = N
             if status_filter:
                 orders = await conn.fetch(
                     """
-                    SELECT id, telegram_id, total_amount, status, created_at
+                    SELECT id
                     FROM orders
                     WHERE telegram_id = $1 AND status = $2
                     ORDER BY created_at DESC
@@ -521,7 +513,7 @@ async def show_orders_list(message: types.Message, status_filter: str | None = N
             else:
                 orders = await conn.fetch(
                     """
-                    SELECT id, telegram_id, total_amount, status, created_at
+                    SELECT id
                     FROM orders
                     WHERE telegram_id = $1
                     ORDER BY created_at DESC
@@ -552,8 +544,6 @@ async def start(message: types.Message, state: FSMContext):
         reply_markup=get_main_menu()
     )
 
-
-# ---------- ВХОД В АДМИНКУ И ПАНЕЛЬ МЕНЕДЖЕРА ----------
 
 @dp.message(Command("admin"))
 async def admin_login_start(message: types.Message, state: FSMContext):
@@ -635,8 +625,6 @@ async def auth_password_input(message: types.Message, state: FSMContext):
             reply_markup=get_manager_menu()
         )
 
-
-# ---------- ПОЛЬЗОВАТЕЛЬСКАЯ ЧАСТЬ ----------
 
 @dp.message(F.text == "ℹ️ Помощь")
 async def help_handler(message: types.Message):
@@ -852,7 +840,7 @@ async def checkout_order(callback: CallbackQuery):
         order_id = await conn.fetchval(
             """
             INSERT INTO orders (telegram_id, total_amount, status)
-            VALUES ($1, $2, 'new')
+            VALUES ($1, $2, 'registered')
             RETURNING id
             """,
             callback.from_user.id,
@@ -891,7 +879,7 @@ async def checkout_order(callback: CallbackQuery):
     await callback.message.answer(
         f"✅ Заказ №{order_id} успешно оформлен.\n"
         f"Сумма заказа: {total_amount} ₸\n"
-        f"Статус: {format_status('new')}",
+        f"Статус: {format_status('registered')}",
         reply_markup=get_main_menu()
     )
 
@@ -899,6 +887,42 @@ async def checkout_order(callback: CallbackQuery):
 @dp.message(lambda message: message.text in {"📜 Мои заказы", "📦 Отследить заказ"})
 async def my_orders_handler(message: types.Message):
     await show_orders_list(message, manager_mode=False)
+
+
+@dp.callback_query(F.data.startswith("usercancel_"))
+async def user_cancel_order(callback: CallbackQuery):
+    order_id = int(callback.data.split("_")[1])
+
+    async with pool.acquire() as conn:
+        order_row = await conn.fetchrow(
+            """
+            SELECT id, status, telegram_id
+            FROM orders
+            WHERE id = $1 AND telegram_id = $2
+            """,
+            order_id,
+            callback.from_user.id
+        )
+
+        if not order_row:
+            await callback.answer("Заказ не найден", show_alert=True)
+            return
+
+        if order_row["status"] not in {"registered", "active"}:
+            await callback.answer("Этот заказ уже нельзя отменить", show_alert=True)
+            return
+
+        await conn.execute(
+            "UPDATE orders SET status = 'cancelled' WHERE id = $1",
+            order_id
+        )
+
+    await log_action(callback.from_user.id, "user_cancel_order")
+    await callback.answer("Заказ отменён")
+    await callback.message.answer(
+        f"❌ Ваш заказ №{order_id} отменён.",
+        reply_markup=get_main_menu()
+    )
 
 
 @dp.message(F.text == "🎯 Рекомендации")
@@ -1007,8 +1031,6 @@ async def profile_handler(message: types.Message):
     )
 
 
-# ---------- ПОИСК ----------
-
 @dp.message(F.text == "🔍 Поиск")
 async def search_start(message: types.Message, state: FSMContext):
     await state.set_state(SearchState.waiting_for_query)
@@ -1048,8 +1070,6 @@ async def search_process(message: types.Message, state: FSMContext):
         await send_product_card(message, row)
 
 
-# ---------- ПАНЕЛЬ МЕНЕДЖЕРА ----------
-
 @dp.message(F.text == "📦 Все заказы")
 async def manager_all_orders(message: types.Message):
     if not await is_manager(message.from_user.id):
@@ -1059,47 +1079,31 @@ async def manager_all_orders(message: types.Message):
     await show_orders_list(message, manager_mode=True)
 
 
-@dp.message(F.text == "🆕 Новые заказы")
-async def manager_new_orders(message: types.Message):
+@dp.message(F.text == "📝 На регистрации")
+async def manager_registered_orders(message: types.Message):
     if not await is_manager(message.from_user.id):
         await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
         return
 
-    await show_orders_list(message, status_filter="new", manager_mode=True)
+    await show_orders_list(message, status_filter="registered", manager_mode=True)
 
 
-@dp.message(F.text == "🛠 В обработке")
-async def manager_processing_orders(message: types.Message):
+@dp.message(F.text == "🟢 Активные")
+async def manager_active_orders(message: types.Message):
     if not await is_manager(message.from_user.id):
         await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
         return
 
-    await show_orders_list(message, status_filter="processing", manager_mode=True)
+    await show_orders_list(message, status_filter="active", manager_mode=True)
 
 
-@dp.message(F.text == "✅ Завершённые")
+@dp.message(F.text == "✅ Выполненные")
 async def manager_completed_orders(message: types.Message):
     if not await is_manager(message.from_user.id):
         await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
         return
 
-    async with pool.acquire() as conn:
-        orders = await conn.fetch(
-            """
-            SELECT id
-            FROM orders
-            WHERE status IN ('delivered', 'confirmed', 'shipped')
-            ORDER BY created_at DESC
-            LIMIT 15
-            """
-        )
-
-    if not orders:
-        await message.answer("Завершённых заказов пока нет.", reply_markup=get_manager_menu())
-        return
-
-    for order in orders:
-        await send_order_details(message, order["id"], manager_mode=True)
+    await show_orders_list(message, status_filter="completed", manager_mode=True)
 
 
 @dp.message(F.text == "❌ Отменённые")
@@ -1109,6 +1113,33 @@ async def manager_cancelled_orders(message: types.Message):
         return
 
     await show_orders_list(message, status_filter="cancelled", manager_mode=True)
+
+
+@dp.message(F.text == "🔎 Найти заказ")
+async def manager_find_order_start(message: types.Message, state: FSMContext):
+    if not await is_manager(message.from_user.id):
+        await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
+        return
+
+    await state.set_state(ManagerOrderSearchState.waiting_for_order_id)
+    await message.answer("Введите трекинг-номер заказа (его ID):", reply_markup=get_manager_menu())
+
+
+@dp.message(ManagerOrderSearchState.waiting_for_order_id)
+async def manager_find_order_finish(message: types.Message, state: FSMContext):
+    if not await is_manager(message.from_user.id):
+        await state.clear()
+        await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
+        return
+
+    try:
+        order_id = int(message.text.strip())
+    except ValueError:
+        await message.answer("Введите номер заказа числом, например: 12", reply_markup=get_manager_menu())
+        return
+
+    await state.clear()
+    await send_order_details(message, order_id, manager_mode=True)
 
 
 @dp.message(F.text == "📈 Статусы заказов")
@@ -1162,8 +1193,15 @@ async def manager_change_order_status(callback: CallbackQuery):
 
         current_status = order_row["status"]
 
-        if current_status == new_status:
-            await callback.answer("Статус уже установлен")
+        allowed_transitions = {
+            "registered": {"active", "cancelled"},
+            "active": {"registered", "completed", "cancelled"},
+            "completed": set(),
+            "cancelled": set(),
+        }
+
+        if new_status not in allowed_transitions.get(current_status, set()):
+            await callback.answer("Недопустимый переход статуса", show_alert=True)
             return
 
         await conn.execute(
@@ -1180,12 +1218,10 @@ async def manager_change_order_status(callback: CallbackQuery):
 
     await log_action(callback.from_user.id, f"manager_order_status_{new_status}")
 
-    # Уведомление клиенту
     try:
         await bot.send_message(
             order_row["telegram_id"],
-            f"📦 Статус вашего заказа №{order_id} обновлён: {format_status(new_status)}",
-            reply_markup=get_main_menu()
+            f"📦 Статус вашего заказа №{order_id} обновлён: {format_status(new_status)}"
         )
     except Exception:
         pass
@@ -1206,8 +1242,6 @@ async def manager_logout_handler(message: types.Message, state: FSMContext):
     await message.answer("Вы вышли из панели менеджера.", reply_markup=get_main_menu())
 
 
-# ---------- АДМИН-ПАНЕЛЬ ----------
-
 @dp.message(F.text == "📊 Статистика")
 async def admin_stats_handler(message: types.Message):
     if not await is_admin(message.from_user.id):
@@ -1225,10 +1259,9 @@ async def admin_stats_handler(message: types.Message):
             actions_count = await conn.fetchval("SELECT COUNT(*) FROM user_actions")
             orders_count = await conn.fetchval("SELECT COUNT(*) FROM orders")
             revenue = await conn.fetchval(
-                "SELECT COALESCE(SUM(total_amount), 0) FROM orders WHERE status IN ('confirmed', 'shipped', 'delivered')"
+                "SELECT COALESCE(SUM(total_amount), 0) FROM orders WHERE status = 'completed'"
             )
             assistant_count = await conn.fetchval("SELECT COUNT(*) FROM assistant_sessions")
-
             status_rows = await conn.fetch(
                 """
                 SELECT status, COUNT(*) AS cnt
@@ -1248,7 +1281,7 @@ async def admin_stats_handler(message: types.Message):
             f"🧺 Товаров в корзинах: {cart_count}\n"
             f"📈 Действий пользователей: {actions_count}\n"
             f"🧾 Заказов: {orders_count}\n"
-            f"💵 Выручка по обработанным заказам: {revenue} ₸\n"
+            f"💵 Выручка по выполненным заказам: {revenue} ₸\n"
             f"🤖 Использований помощника: {assistant_count}\n\n"
             "📦 Заказы по статусам:\n"
         )
@@ -1389,8 +1422,6 @@ async def admin_categories_handler(message: types.Message):
     await message.answer(text, reply_markup=get_admin_menu())
 
 
-# ---------- УПРАВЛЕНИЕ ТОВАРАМИ ----------
-
 @dp.message(F.text == "➕ Добавить товар")
 async def admin_add_product(message: types.Message, state: FSMContext):
     if not await is_admin(message.from_user.id):
@@ -1490,9 +1521,7 @@ async def edit_product_start(message: types.Message, state: FSMContext):
 
     await state.clear()
     await state.set_state(EditProduct.choose_product)
-    await message.answer(
-        "Введите точное название товара, который хотите изменить:"
-    )
+    await message.answer("Введите точное название товара, который хотите изменить:")
 
 
 @dp.message(EditProduct.choose_product)
@@ -1638,8 +1667,6 @@ async def delete_product(message: types.Message, state: FSMContext):
     await message.answer("🗑 Товар удалён.", reply_markup=get_admin_menu())
 
 
-# ---------- УПРАВЛЕНИЕ КАТЕГОРИЯМИ ----------
-
 @dp.message(F.text == "➕ Добавить категорию")
 async def admin_add_category_start(message: types.Message, state: FSMContext):
     if not await is_admin(message.from_user.id):
@@ -1766,6 +1793,21 @@ async def delete_category_finish(message: types.Message, state: FSMContext):
     await message.answer("🗑 Категория удалена.", reply_markup=get_admin_menu())
 
 
+@dp.message(F.text == "🚪 Выход из панели менеджера")
+async def manager_logout_handler(message: types.Message, state: FSMContext):
+    await state.clear()
+    auth_stage.pop(message.from_user.id, None)
+    auth_data.pop(message.from_user.id, None)
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE managers SET telegram_id = NULL WHERE telegram_id = $1",
+            message.from_user.id
+        )
+
+    await message.answer("Вы вышли из панели менеджера.", reply_markup=get_main_menu())
+
+
 @dp.message(F.text == "🚪 Выход из админ-панели")
 async def admin_logout_handler(message: types.Message, state: FSMContext):
     await state.clear()
@@ -1783,10 +1825,17 @@ async def admin_logout_handler(message: types.Message, state: FSMContext):
 @dp.message(F.text == "⬅️ Назад")
 async def back_handler(message: types.Message, state: FSMContext):
     await state.clear()
+
+    if await is_admin(message.from_user.id):
+        await message.answer("Админ-меню 👇", reply_markup=get_admin_menu())
+        return
+
+    if await is_manager(message.from_user.id):
+        await message.answer("Панель менеджера 👇", reply_markup=get_manager_menu())
+        return
+
     await message.answer("Главное меню 👇", reply_markup=get_main_menu())
 
-
-# ---------- FALLBACK: КАТЕГОРИИ И УМНЫЙ ПОМОЩНИК ----------
 
 @dp.message()
 async def category_or_assistant_router(message: types.Message, state: FSMContext):
@@ -1840,7 +1889,7 @@ async def main():
     pool = await connect()
     await create_tables(pool)
 
-    print("Бот запущен: магазин + трекинг заказов + менеджер + админка")
+    print("Бот запущен: магазин + новая логика заказов + менеджер")
     await dp.start_polling(bot)
 
 
