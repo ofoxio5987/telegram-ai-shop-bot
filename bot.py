@@ -575,9 +575,7 @@ async def start(message: types.Message, state: FSMContext):
     await save_user(message)
 
     await message.answer(
-        "🤖 Добро пожаловать в интеллектуальный магазин!
-
-"
+        "🤖 Добро пожаловать в интеллектуальный магазин!\n\n"
         "Теперь вы можете пользоваться меню как в настоящем магазине Telegram 👇",
         reply_markup=get_main_menu()
     )
@@ -615,8 +613,8 @@ async def auth_login_input(message: types.Message):
 
     if text.startswith("/") or text in BLOCKED_AUTH_INPUTS:
         await message.answer(
-            "Сейчас идёт вход в систему.
-Введите логин или отправьте /cancel, чтобы отменить вход."
+            "Сейчас идёт вход в систему.\n"
+            "Введите логин или отправьте /cancel, чтобы отменить вход."
         )
         return
 
@@ -708,15 +706,10 @@ async def assistant_hint(message: types.Message):
         return
 
     await message.answer(
-        "🤖 Я всегда активен. Просто напишите, какой товар вам нужен.
-
-"
-        "Например:
-"
-        "• Нужен подарок девушке до 30000
-"
-        "• Хочу что-то из электроники до 50000, главное качество
-"
+        "🤖 Я всегда активен. Просто напишите, какой товар вам нужен.\n\n"
+        "Например:\n"
+        "• Нужен подарок девушке до 30000\n"
+        "• Хочу что-то из электроники до 50000, главное качество\n"
         "• Нужны недорогие аксессуары",
         reply_markup=get_main_menu()
     )
