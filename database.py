@@ -44,6 +44,17 @@ async def create_tables(pool):
         ADD COLUMN IF NOT EXISTS telegram_id BIGINT;
         """)
 
+        # MANAGERS
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS managers(
+            id SERIAL PRIMARY KEY,
+            login TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            telegram_id BIGINT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+
         # CATEGORIES
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS categories(
@@ -164,7 +175,7 @@ async def create_tables(pool):
             "SELECT id FROM categories WHERE name = 'Аксессуары';"
         )
 
-        # Стартовые товары (цены в тенге)
+        # Стартовые товары
         products_count = await conn.fetchval("SELECT COUNT(*) FROM products;")
 
         if products_count == 0:
@@ -220,7 +231,7 @@ async def create_tables(pool):
             18
             )
 
-        # Админ
+        # Админ по умолчанию
         admin_exists = await conn.fetchval(
             "SELECT COUNT(*) FROM admins WHERE login = 'admin';"
         )
@@ -235,4 +246,21 @@ async def create_tables(pool):
             UPDATE admins
             SET password_hash = 'admin123'
             WHERE login = 'admin';
+            """)
+
+        # Менеджер по умолчанию
+        manager_exists = await conn.fetchval(
+            "SELECT COUNT(*) FROM managers WHERE login = 'manager';"
+        )
+
+        if manager_exists == 0:
+            await conn.execute("""
+            INSERT INTO managers (login, password_hash)
+            VALUES ('manager', 'manager123');
+            """)
+        else:
+            await conn.execute("""
+            UPDATE managers
+            SET password_hash = 'manager123'
+            WHERE login = 'manager';
             """)

@@ -5,7 +5,7 @@ import re
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart, Command
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 
@@ -17,6 +17,7 @@ from keyboards.inline_kb import (
     cart_inline_keyboard,
 )
 from keyboards.admin_kb import get_admin_menu
+from keyboards.manager_kb import get_manager_menu
 from states.product_states import AddProduct, EditProduct, DeleteProduct
 from states.category_states import AddCategory, EditCategory, DeleteCategory
 from states.assistant_states import SearchState
@@ -37,8 +38,22 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 pool = None
 
-admin_auth_stage = {}
-admin_auth_data = {}
+auth_stage = {}
+auth_data = {}
+
+
+ORDER_STATUS_LABELS = {
+    "new": "🆕 Новый",
+    "processing": "🛠 В обработке",
+    "confirmed": "✅ Подтверждён",
+    "shipped": "🚚 Отправлен",
+    "delivered": "📦 Доставлен",
+    "cancelled": "❌ Отменён",
+}
+
+
+def format_status(status: str) -> str:
+    return ORDER_STATUS_LABELS.get(status, status)
 
 
 async def save_user(message: types.Message):
@@ -73,6 +88,15 @@ async def is_admin(telegram_id: int) -> bool:
     async with pool.acquire() as conn:
         result = await conn.fetchval(
             "SELECT COUNT(*) FROM admins WHERE telegram_id = $1",
+            telegram_id
+        )
+    return result > 0
+
+
+async def is_manager(telegram_id: int) -> bool:
+    async with pool.acquire() as conn:
+        result = await conn.fetchval(
+            "SELECT COUNT(*) FROM managers WHERE telegram_id = $1",
             telegram_id
         )
     return result > 0
@@ -169,6 +193,38 @@ def parse_user_request(user_text: str) -> dict:
         "priority": priority,
         "target_person": target_person,
     }
+
+
+def build_order_manage_keyboard(order_id: int, status: str):
+    buttons = []
+
+    if status == "new":
+        buttons.append([
+            InlineKeyboardButton(text="🛠 В обработку", callback_data=f"orderstatus_{order_id}_processing"),
+            InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"orderstatus_{order_id}_confirmed"),
+        ])
+        buttons.append([
+            InlineKeyboardButton(text="❌ Отменить", callback_data=f"orderstatus_{order_id}_cancelled")
+        ])
+    elif status == "processing":
+        buttons.append([
+            InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"orderstatus_{order_id}_confirmed"),
+            InlineKeyboardButton(text="❌ Отменить", callback_data=f"orderstatus_{order_id}_cancelled"),
+        ])
+    elif status == "confirmed":
+        buttons.append([
+            InlineKeyboardButton(text="🚚 Отправить", callback_data=f"orderstatus_{order_id}_shipped"),
+            InlineKeyboardButton(text="❌ Отменить", callback_data=f"orderstatus_{order_id}_cancelled"),
+        ])
+    elif status == "shipped":
+        buttons.append([
+            InlineKeyboardButton(text="📦 Доставлен", callback_data=f"orderstatus_{order_id}_delivered")
+        ])
+
+    if not buttons:
+        return None
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 async def send_product_card(message: types.Message, row):
@@ -372,6 +428,119 @@ async def process_assistant_request(message: types.Message, user_text: str) -> b
     return True
 
 
+async def build_order_text(order_row, items_rows):
+    text = (
+        f"📦 Заказ №{order_row['id']}\n"
+        f"📌 Статус: {format_status(order_row['status'])}\n"
+        f"💰 Сумма: {order_row['total_amount']} ₸\n"
+        f"🕒 Дата: {order_row['created_at']}\n\n"
+        f"Состав заказа:\n"
+    )
+
+    for item in items_rows:
+        text += (
+            f"• {item['name']} — {item['quantity']} шт. × {item['price']} ₸\n"
+        )
+
+    return text
+
+
+async def send_order_details(message: types.Message, order_id: int, manager_mode: bool = False):
+    async with pool.acquire() as conn:
+        order_row = await conn.fetchrow(
+            """
+            SELECT id, telegram_id, total_amount, status, created_at
+            FROM orders
+            WHERE id = $1
+            """,
+            order_id
+        )
+
+        if not order_row:
+            await message.answer("Заказ не найден.")
+            return
+
+        items_rows = await conn.fetch(
+            """
+            SELECT p.name, oi.quantity, oi.price
+            FROM order_items oi
+            JOIN products p ON oi.product_id = p.id
+            WHERE oi.order_id = $1
+            ORDER BY oi.id
+            """,
+            order_id
+        )
+
+    text = await build_order_text(order_row, items_rows)
+
+    if manager_mode:
+        text += f"\n👤 Telegram ID клиента: {order_row['telegram_id']}"
+
+    await message.answer(
+        text,
+        reply_markup=build_order_manage_keyboard(order_row["id"], order_row["status"]) if manager_mode else None
+    )
+
+
+async def show_orders_list(message: types.Message, status_filter: str | None = None, manager_mode: bool = False):
+    async with pool.acquire() as conn:
+        if manager_mode:
+            if status_filter:
+                orders = await conn.fetch(
+                    """
+                    SELECT id, telegram_id, total_amount, status, created_at
+                    FROM orders
+                    WHERE status = $1
+                    ORDER BY created_at DESC
+                    LIMIT 15
+                    """,
+                    status_filter
+                )
+            else:
+                orders = await conn.fetch(
+                    """
+                    SELECT id, telegram_id, total_amount, status, created_at
+                    FROM orders
+                    ORDER BY created_at DESC
+                    LIMIT 15
+                    """
+                )
+        else:
+            if status_filter:
+                orders = await conn.fetch(
+                    """
+                    SELECT id, telegram_id, total_amount, status, created_at
+                    FROM orders
+                    WHERE telegram_id = $1 AND status = $2
+                    ORDER BY created_at DESC
+                    LIMIT 10
+                    """,
+                    message.from_user.id,
+                    status_filter
+                )
+            else:
+                orders = await conn.fetch(
+                    """
+                    SELECT id, telegram_id, total_amount, status, created_at
+                    FROM orders
+                    WHERE telegram_id = $1
+                    ORDER BY created_at DESC
+                    LIMIT 10
+                    """,
+                    message.from_user.id
+                )
+
+    if not orders:
+        await message.answer(
+            "Заказы не найдены.",
+            reply_markup=get_manager_menu() if manager_mode else get_main_menu()
+        )
+        return
+
+    for order_row in orders:
+        await send_order_details(message, order_row["id"], manager_mode=manager_mode)
+
+
 @dp.message(CommandStart())
 async def start(message: types.Message, state: FSMContext):
     await state.clear()
@@ -384,66 +553,87 @@ async def start(message: types.Message, state: FSMContext):
     )
 
 
-# ---------- ВХОД В АДМИНКУ ТОЛЬКО ЧЕРЕЗ /admin ----------
+# ---------- ВХОД В АДМИНКУ И ПАНЕЛЬ МЕНЕДЖЕРА ----------
 
 @dp.message(Command("admin"))
 async def admin_login_start(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     await state.clear()
-    admin_auth_stage[user_id] = "login"
-    admin_auth_data[user_id] = {}
+    auth_stage[user_id] = "login"
+    auth_data[user_id] = {"role": "admin"}
     await message.answer("Введите логин администратора:")
 
 
-@dp.message(lambda message: admin_auth_stage.get(message.from_user.id) == "login")
-async def admin_login_input(message: types.Message):
+@dp.message(Command("manager"))
+async def manager_login_start(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
-    admin_auth_data[user_id] = {"login": message.text.strip()}
-    admin_auth_stage[user_id] = "password"
-    await message.answer("Введите пароль:")
+    await state.clear()
+    auth_stage[user_id] = "login"
+    auth_data[user_id] = {"role": "manager"}
+    await message.answer("Введите логин менеджера:")
 
 
-@dp.message(lambda message: admin_auth_stage.get(message.from_user.id) == "password")
-async def admin_password_input(message: types.Message, state: FSMContext):
+@dp.message(lambda message: auth_stage.get(message.from_user.id) == "login")
+async def auth_login_input(message: types.Message):
     user_id = message.from_user.id
-    login = admin_auth_data.get(user_id, {}).get("login")
+    role = auth_data.get(user_id, {}).get("role")
+    auth_data[user_id]["login"] = message.text.strip()
+    auth_stage[user_id] = "password"
+
+    role_name = "администратора" if role == "admin" else "менеджера"
+    await message.answer(f"Введите пароль {role_name}:")
+
+
+@dp.message(lambda message: auth_stage.get(message.from_user.id) == "password")
+async def auth_password_input(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    role = auth_data.get(user_id, {}).get("role")
+    login = auth_data.get(user_id, {}).get("login")
     password = message.text.strip()
 
+    table_name = "admins" if role == "admin" else "managers"
+
     async with pool.acquire() as conn:
-        admin = await conn.fetchrow(
-            "SELECT id, login, password_hash FROM admins WHERE login = $1",
+        role_user = await conn.fetchrow(
+            f"SELECT id, login, password_hash FROM {table_name} WHERE login = $1",
             login
         )
 
-    if not admin:
-        admin_auth_stage.pop(user_id, None)
-        admin_auth_data.pop(user_id, None)
+    if not role_user:
+        auth_stage.pop(user_id, None)
+        auth_data.pop(user_id, None)
         await state.clear()
         await message.answer("Неверный логин.", reply_markup=get_main_menu())
         return
 
-    if password != admin["password_hash"]:
-        admin_auth_stage.pop(user_id, None)
-        admin_auth_data.pop(user_id, None)
+    if password != role_user["password_hash"]:
+        auth_stage.pop(user_id, None)
+        auth_data.pop(user_id, None)
         await state.clear()
         await message.answer("Неверный пароль.", reply_markup=get_main_menu())
         return
 
     async with pool.acquire() as conn:
         await conn.execute(
-            "UPDATE admins SET telegram_id = $1 WHERE login = $2",
+            f"UPDATE {table_name} SET telegram_id = $1 WHERE login = $2",
             user_id,
             login
         )
 
-    admin_auth_stage.pop(user_id, None)
-    admin_auth_data.pop(user_id, None)
+    auth_stage.pop(user_id, None)
+    auth_data.pop(user_id, None)
     await state.clear()
 
-    await message.answer(
-        "✅ Вход в админ-панель выполнен успешно.",
-        reply_markup=get_admin_menu()
-    )
+    if role == "admin":
+        await message.answer(
+            "✅ Вход в админ-панель выполнен успешно.",
+            reply_markup=get_admin_menu()
+        )
+    else:
+        await message.answer(
+            "✅ Вход в панель менеджера выполнен успешно.",
+            reply_markup=get_manager_menu()
+        )
 
 
 # ---------- ПОЛЬЗОВАТЕЛЬСКАЯ ЧАСТЬ ----------
@@ -456,11 +646,13 @@ async def help_handler(message: types.Message):
         "🔍 Поиск — поиск по названию\n"
         "❤️ Избранное — сохранённые товары\n"
         "🧺 Корзина — товары к заказу\n"
-        "📜 Мои заказы — история заказов\n"
+        "📜 Мои заказы — история и отслеживание статусов\n"
+        "📦 Отследить заказ — быстро посмотреть текущие статусы\n"
         "🎯 Рекомендации — персональные предложения\n"
         "🤖 Умный помощник — можно просто написать, что вам нужно\n"
         "👤 Профиль — ваши данные\n\n"
-        "Для входа в админ-панель используйте команду /admin",
+        "Для входа в админ-панель используйте /admin\n"
+        "Для входа в панель менеджера используйте /manager",
         reply_markup=get_main_menu()
     )
 
@@ -698,42 +890,15 @@ async def checkout_order(callback: CallbackQuery):
     await callback.answer("Заказ оформлен")
     await callback.message.answer(
         f"✅ Заказ №{order_id} успешно оформлен.\n"
-        f"Сумма заказа: {total_amount} ₸",
+        f"Сумма заказа: {total_amount} ₸\n"
+        f"Статус: {format_status('new')}",
         reply_markup=get_main_menu()
     )
 
 
-@dp.message(F.text == "📜 Мои заказы")
+@dp.message(lambda message: message.text in {"📜 Мои заказы", "📦 Отследить заказ"})
 async def my_orders_handler(message: types.Message):
-    async with pool.acquire() as conn:
-        orders = await conn.fetch(
-            """
-            SELECT id, total_amount, status, created_at
-            FROM orders
-            WHERE telegram_id = $1
-            ORDER BY created_at DESC
-            LIMIT 10
-            """,
-            message.from_user.id
-        )
-
-    if not orders:
-        await message.answer(
-            "У вас пока нет оформленных заказов.",
-            reply_markup=get_main_menu()
-        )
-        return
-
-    text = "📜 Ваши заказы:\n\n"
-    for order in orders:
-        text += (
-            f"Заказ №{order['id']}\n"
-            f"💰 Сумма: {order['total_amount']} ₸\n"
-            f"📦 Статус: {order['status']}\n"
-            f"🕒 Дата: {order['created_at']}\n\n"
-        )
-
-    await message.answer(text, reply_markup=get_main_menu())
+    await show_orders_list(message, manager_mode=False)
 
 
 @dp.message(F.text == "🎯 Рекомендации")
@@ -883,6 +1048,164 @@ async def search_process(message: types.Message, state: FSMContext):
         await send_product_card(message, row)
 
 
+# ---------- ПАНЕЛЬ МЕНЕДЖЕРА ----------
+
+@dp.message(F.text == "📦 Все заказы")
+async def manager_all_orders(message: types.Message):
+    if not await is_manager(message.from_user.id):
+        await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
+        return
+
+    await show_orders_list(message, manager_mode=True)
+
+
+@dp.message(F.text == "🆕 Новые заказы")
+async def manager_new_orders(message: types.Message):
+    if not await is_manager(message.from_user.id):
+        await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
+        return
+
+    await show_orders_list(message, status_filter="new", manager_mode=True)
+
+
+@dp.message(F.text == "🛠 В обработке")
+async def manager_processing_orders(message: types.Message):
+    if not await is_manager(message.from_user.id):
+        await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
+        return
+
+    await show_orders_list(message, status_filter="processing", manager_mode=True)
+
+
+@dp.message(F.text == "✅ Завершённые")
+async def manager_completed_orders(message: types.Message):
+    if not await is_manager(message.from_user.id):
+        await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
+        return
+
+    async with pool.acquire() as conn:
+        orders = await conn.fetch(
+            """
+            SELECT id
+            FROM orders
+            WHERE status IN ('delivered', 'confirmed', 'shipped')
+            ORDER BY created_at DESC
+            LIMIT 15
+            """
+        )
+
+    if not orders:
+        await message.answer("Завершённых заказов пока нет.", reply_markup=get_manager_menu())
+        return
+
+    for order in orders:
+        await send_order_details(message, order["id"], manager_mode=True)
+
+
+@dp.message(F.text == "❌ Отменённые")
+async def manager_cancelled_orders(message: types.Message):
+    if not await is_manager(message.from_user.id):
+        await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
+        return
+
+    await show_orders_list(message, status_filter="cancelled", manager_mode=True)
+
+
+@dp.message(F.text == "📈 Статусы заказов")
+async def manager_orders_stats(message: types.Message):
+    if not await is_manager(message.from_user.id):
+        await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
+        return
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT status, COUNT(*) AS cnt
+            FROM orders
+            GROUP BY status
+            ORDER BY cnt DESC
+            """
+        )
+
+    if not rows:
+        await message.answer("Статистика по заказам пока недоступна.", reply_markup=get_manager_menu())
+        return
+
+    text = "📈 Статусы заказов:\n\n"
+    total = 0
+    for row in rows:
+        total += row["cnt"]
+        text += f"{format_status(row['status'])}: {row['cnt']}\n"
+
+    text += f"\nВсего заказов: {total}"
+    await message.answer(text, reply_markup=get_manager_menu())
+
+
+@dp.callback_query(F.data.startswith("orderstatus_"))
+async def manager_change_order_status(callback: CallbackQuery):
+    if not await is_manager(callback.from_user.id):
+        await callback.answer("Доступ запрещён", show_alert=True)
+        return
+
+    _, order_id_str, new_status = callback.data.split("_", 2)
+    order_id = int(order_id_str)
+
+    async with pool.acquire() as conn:
+        order_row = await conn.fetchrow(
+            "SELECT id, status, telegram_id FROM orders WHERE id = $1",
+            order_id
+        )
+
+        if not order_row:
+            await callback.answer("Заказ не найден", show_alert=True)
+            return
+
+        current_status = order_row["status"]
+
+        if current_status == new_status:
+            await callback.answer("Статус уже установлен")
+            return
+
+        await conn.execute(
+            "UPDATE orders SET status = $1 WHERE id = $2",
+            new_status,
+            order_id
+        )
+
+    await callback.answer(f"Статус обновлён: {format_status(new_status)}")
+    await callback.message.answer(
+        f"✅ Заказ №{order_id} переведён в статус: {format_status(new_status)}",
+        reply_markup=get_manager_menu()
+    )
+
+    await log_action(callback.from_user.id, f"manager_order_status_{new_status}")
+
+    # Уведомление клиенту
+    try:
+        await bot.send_message(
+            order_row["telegram_id"],
+            f"📦 Статус вашего заказа №{order_id} обновлён: {format_status(new_status)}",
+            reply_markup=get_main_menu()
+        )
+    except Exception:
+        pass
+
+
+@dp.message(F.text == "🚪 Выход из панели менеджера")
+async def manager_logout_handler(message: types.Message, state: FSMContext):
+    await state.clear()
+    auth_stage.pop(message.from_user.id, None)
+    auth_data.pop(message.from_user.id, None)
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE managers SET telegram_id = NULL WHERE telegram_id = $1",
+            message.from_user.id
+        )
+
+    await message.answer("Вы вышли из панели менеджера.", reply_markup=get_main_menu())
+
+
 # ---------- АДМИН-ПАНЕЛЬ ----------
 
 @dp.message(F.text == "📊 Статистика")
@@ -894,62 +1217,45 @@ async def admin_stats_handler(message: types.Message):
     try:
         async with pool.acquire() as conn:
             users_count = await conn.fetchval("SELECT COUNT(*) FROM users")
+            managers_count = await conn.fetchval("SELECT COUNT(*) FROM managers")
             products_count = await conn.fetchval("SELECT COUNT(*) FROM products")
             categories_count = await conn.fetchval("SELECT COUNT(*) FROM categories")
             favorites_count = await conn.fetchval("SELECT COUNT(*) FROM favorites")
             cart_count = await conn.fetchval("SELECT COUNT(*) FROM cart")
             actions_count = await conn.fetchval("SELECT COUNT(*) FROM user_actions")
             orders_count = await conn.fetchval("SELECT COUNT(*) FROM orders")
-            revenue = await conn.fetchval("SELECT COALESCE(SUM(total_amount), 0) FROM orders")
+            revenue = await conn.fetchval(
+                "SELECT COALESCE(SUM(total_amount), 0) FROM orders WHERE status IN ('confirmed', 'shipped', 'delivered')"
+            )
             assistant_count = await conn.fetchval("SELECT COUNT(*) FROM assistant_sessions")
 
-            top_categories = await conn.fetch(
+            status_rows = await conn.fetch(
                 """
-                SELECT favorite_category, COUNT(*) AS cnt
-                FROM users
-                WHERE favorite_category IS NOT NULL
-                GROUP BY favorite_category
+                SELECT status, COUNT(*) AS cnt
+                FROM orders
+                GROUP BY status
                 ORDER BY cnt DESC
-                LIMIT 5
-                """
-            )
-
-            top_products = await conn.fetch(
-                """
-                SELECT p.name, COUNT(*) AS cnt
-                FROM order_items oi
-                JOIN products p ON oi.product_id = p.id
-                GROUP BY p.name
-                ORDER BY cnt DESC
-                LIMIT 5
                 """
             )
 
         text = (
             "📊 Статистика магазина\n\n"
             f"👥 Пользователей: {users_count}\n"
+            f"🧑‍💼 Менеджеров: {managers_count}\n"
             f"📦 Товаров: {products_count}\n"
             f"🗂 Категорий: {categories_count}\n"
             f"❤️ Добавлений в избранное: {favorites_count}\n"
             f"🧺 Товаров в корзинах: {cart_count}\n"
             f"📈 Действий пользователей: {actions_count}\n"
             f"🧾 Заказов: {orders_count}\n"
-            f"💵 Выручка: {revenue} ₸\n"
+            f"💵 Выручка по обработанным заказам: {revenue} ₸\n"
             f"🤖 Использований помощника: {assistant_count}\n\n"
-            "🔥 Любимые категории пользователей:\n"
+            "📦 Заказы по статусам:\n"
         )
 
-        if top_categories:
-            for item in top_categories:
-                text += f"• {item['favorite_category']} — {item['cnt']}\n"
-        else:
-            text += "Пока нет данных\n"
-
-        text += "\n🏆 Топ товаров по заказам:\n"
-
-        if top_products:
-            for item in top_products:
-                text += f"• {item['name']} — {item['cnt']}\n"
+        if status_rows:
+            for item in status_rows:
+                text += f"• {format_status(item['status'])} — {item['cnt']}\n"
         else:
             text += "Пока нет данных\n"
 
@@ -992,6 +1298,34 @@ async def admin_users_handler(message: types.Message):
             f"Дата: {row['created_at']}\n\n"
         )
 
+    await message.answer(text, reply_markup=get_admin_menu())
+
+
+@dp.message(F.text == "🧑‍💼 Менеджеры")
+async def admin_managers_handler(message: types.Message):
+    if not await is_admin(message.from_user.id):
+        await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
+        return
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT login, telegram_id, created_at
+            FROM managers
+            ORDER BY created_at DESC
+            """
+        )
+
+    if not rows:
+        await message.answer("Менеджеров пока нет.", reply_markup=get_admin_menu())
+        return
+
+    text = "🧑‍💼 Менеджеры:\n\n"
+    for row in rows:
+        tg = row["telegram_id"] if row["telegram_id"] else "не привязан"
+        text += f"Логин: {row['login']}\nTelegram ID: {tg}\nДата: {row['created_at']}\n\n"
+
+    text += "Вход для менеджеров выполняется через команду /manager"
     await message.answer(text, reply_markup=get_admin_menu())
 
 
@@ -1435,8 +1769,8 @@ async def delete_category_finish(message: types.Message, state: FSMContext):
 @dp.message(F.text == "🚪 Выход из админ-панели")
 async def admin_logout_handler(message: types.Message, state: FSMContext):
     await state.clear()
-    admin_auth_stage.pop(message.from_user.id, None)
-    admin_auth_data.pop(message.from_user.id, None)
+    auth_stage.pop(message.from_user.id, None)
+    auth_data.pop(message.from_user.id, None)
 
     async with pool.acquire() as conn:
         await conn.execute(
@@ -1460,12 +1794,20 @@ async def category_or_assistant_router(message: types.Message, state: FSMContext
     if current_state is not None:
         return
 
-    if admin_auth_stage.get(message.from_user.id) in {"login", "password"}:
+    if auth_stage.get(message.from_user.id) in {"login", "password"}:
         return
 
     text = (message.text or "").strip()
     if not text:
         await message.answer("Пожалуйста, используйте кнопки ниже 👇", reply_markup=get_main_menu())
+        return
+
+    if await is_admin(message.from_user.id):
+        await message.answer("Используйте кнопки админ-меню 👇", reply_markup=get_admin_menu())
+        return
+
+    if await is_manager(message.from_user.id):
+        await message.answer("Используйте кнопки панели менеджера 👇", reply_markup=get_manager_menu())
         return
 
     async with pool.acquire() as conn:
@@ -1498,7 +1840,7 @@ async def main():
     pool = await connect()
     await create_tables(pool)
 
-    print("Бот запущен: магазин + всегда активный помощник + админка через /admin")
+    print("Бот запущен: магазин + трекинг заказов + менеджер + админка")
     await dp.start_polling(bot)
 
 
