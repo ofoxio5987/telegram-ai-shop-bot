@@ -1,14 +1,13 @@
 import asyncio
 import json
 import os
-
+import re
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
 from aiogram.types import CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
-from openai import AsyncOpenAI
 
 from database import connect, create_tables
 from keyboards.user_kb import get_main_menu, build_categories_keyboard
@@ -26,7 +25,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
 
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не найден")
@@ -34,16 +33,50 @@ if not BOT_TOKEN:
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL не найден")
 
-if not OPENAI_API_KEY:
-    raise ValueError("OPENAI_API_KEY не найден")
-
-client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
-pool = None
 
 admin_auth_stage = {}
 admin_auth_data = {}
+
+def parse_user_request(user_text: str) -> dict:
+    text = user_text.lower()
+
+    if any(word in text for word in ["электроника", "телефон", "гаджет"]):
+        category = "Электроника"
+    elif any(word in text for word in ["одежда", "куртка", "футболка"]):
+        category = "Одежда"
+    elif any(word in text for word in ["обувь", "кроссовки", "ботинки"]):
+        category = "Обувь"
+    elif any(word in text for word in ["аксессуар", "часы", "сумка"]):
+        category = "Аксессуары"
+    else:
+        category = None
+
+    import re
+    budget_match = re.search(r"\d+", text)
+    budget = int(budget_match.group()) if budget_match else None
+
+    if any(word in text for word in ["дешево", "недорого", "дешевый"]):
+        priority = "цена"
+    elif any(word in text for word in ["качественно", "премиум", "дорогой"]):
+        priority = "качество"
+    else:
+        priority = "универсальность"
+
+    if "девушк" in text:
+        target_person = "девушке"
+    elif "мужчин" in text:
+        target_person = "мужчине"
+    elif "ребен" in text:
+        target_person = "ребенку"
+    else:
+        target_person = None
+
+    return {
+        "category": category,
+        "budget": budget,
+        "priority": priority,
+        "target_person": target_person
+    }
 
 
 async def save_user(message: types.Message):
@@ -749,7 +782,7 @@ async def assistant_start(message: types.Message, state: FSMContext):
 async def assistant_process_request(message: types.Message, state: FSMContext):
     try:
         user_text = message.text.strip()
-        parsed = await parse_user_request_with_gpt(user_text)
+        parsed = parse_user_request(user_text)
 
         category = parsed.get("category")
         budget = parsed.get("budget")
