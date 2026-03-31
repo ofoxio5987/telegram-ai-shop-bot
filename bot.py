@@ -41,6 +41,36 @@ pool = None
 auth_stage = {}
 auth_data = {}
 
+MAIN_MENU_BUTTONS = {
+    "🛒 Каталог", "🔍 Поиск", "❤️ Избранное", "🧺 Корзина", "📜 Мои заказы",
+    "📦 Отследить заказ", "🎯 Рекомендации", "🤖 Умный помощник", "👤 Профиль", "ℹ️ Помощь", "⬅️ Назад"
+}
+
+ADMIN_MENU_BUTTONS = {
+    "📊 Статистика", "👥 Пользователи", "🧑‍💼 Менеджеры", "📦 Товары", "🗂 Категории",
+    "➕ Добавить товар", "➕ Добавить категорию", "✏️ Изменить товар", "✏️ Изменить категорию",
+    "❌ Удалить товар", "❌ Удалить категорию", "🚪 Выход из админ-панели"
+}
+
+MANAGER_MENU_BUTTONS = {
+    "📦 Все заказы", "🔎 Найти заказ", "📝 На регистрации", "🟢 Активные",
+    "✅ Выполненные", "❌ Отменённые", "📈 Статусы заказов", "🚪 Выход из панели менеджера"
+}
+
+BLOCKED_AUTH_INPUTS = MAIN_MENU_BUTTONS | ADMIN_MENU_BUTTONS | MANAGER_MENU_BUTTONS
+
+
+def clear_pending_auth(user_id: int):
+    auth_stage.pop(user_id, None)
+    auth_data.pop(user_id, None)
+
+
+async def logout_roles(user_id: int):
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE admins SET telegram_id = NULL WHERE telegram_id = $1", user_id)
+        await conn.execute("UPDATE managers SET telegram_id = NULL WHERE telegram_id = $1", user_id)
+
+
 ORDER_STATUS_LABELS = {
     "registered": "📝 На регистрации",
     "active": "🟢 Активный",
@@ -540,10 +570,14 @@ async def show_orders_list(message: types.Message, status_filter: str | None = N
 @dp.message(CommandStart())
 async def start(message: types.Message, state: FSMContext):
     await state.clear()
+    clear_pending_auth(message.from_user.id)
+    await logout_roles(message.from_user.id)
     await save_user(message)
 
     await message.answer(
-        "🤖 Добро пожаловать в интеллектуальный магазин!\n\n"
+        "🤖 Добро пожаловать в интеллектуальный магазин!
+
+"
         "Теперь вы можете пользоваться меню как в настоящем магазине Telegram 👇",
         reply_markup=get_main_menu()
     )
@@ -567,11 +601,27 @@ async def manager_login_start(message: types.Message, state: FSMContext):
     await message.answer("Введите логин менеджера:")
 
 
+@dp.message(Command("cancel"))
+async def cancel_auth_or_state(message: types.Message, state: FSMContext):
+    await state.clear()
+    clear_pending_auth(message.from_user.id)
+    await message.answer("Текущее действие отменено.", reply_markup=get_main_menu())
+
+
 @dp.message(lambda message: auth_stage.get(message.from_user.id) == "login")
 async def auth_login_input(message: types.Message):
     user_id = message.from_user.id
+    text = (message.text or "").strip()
+
+    if text.startswith("/") or text in BLOCKED_AUTH_INPUTS:
+        await message.answer(
+            "Сейчас идёт вход в систему.
+Введите логин или отправьте /cancel, чтобы отменить вход."
+        )
+        return
+
     role = auth_data.get(user_id, {}).get("role")
-    auth_data[user_id]["login"] = message.text.strip()
+    auth_data[user_id]["login"] = text
     auth_stage[user_id] = "password"
 
     role_name = "администратора" if role == "admin" else "менеджера"
@@ -651,11 +701,22 @@ async def help_handler(message: types.Message):
 
 @dp.message(F.text == "🤖 Умный помощник")
 async def assistant_hint(message: types.Message):
+    if auth_stage.get(message.from_user.id) in {"login", "password"}:
+        await message.answer(
+            "Сначала завершите вход или отмените его командой /cancel."
+        )
+        return
+
     await message.answer(
-        "🤖 Я всегда активен. Просто напишите, какой товар вам нужен.\n\n"
-        "Например:\n"
-        "• Нужен подарок девушке до 30000\n"
-        "• Хочу что-то из электроники до 50000, главное качество\n"
+        "🤖 Я всегда активен. Просто напишите, какой товар вам нужен.
+
+"
+        "Например:
+"
+        "• Нужен подарок девушке до 30000
+"
+        "• Хочу что-то из электроники до 50000, главное качество
+"
         "• Нужны недорогие аксессуары",
         reply_markup=get_main_menu()
     )
@@ -1234,8 +1295,7 @@ async def manager_change_order_status(callback: CallbackQuery):
 @dp.message(F.text == "🚪 Выход из панели менеджера")
 async def manager_logout_handler(message: types.Message, state: FSMContext):
     await state.clear()
-    auth_stage.pop(message.from_user.id, None)
-    auth_data.pop(message.from_user.id, None)
+    clear_pending_auth(message.from_user.id)
 
     async with pool.acquire() as conn:
         await conn.execute(
@@ -1925,8 +1985,7 @@ async def delete_category_finish(message: types.Message, state: FSMContext):
 @dp.message(F.text == "🚪 Выход из панели менеджера")
 async def manager_logout_handler(message: types.Message, state: FSMContext):
     await state.clear()
-    auth_stage.pop(message.from_user.id, None)
-    auth_data.pop(message.from_user.id, None)
+    clear_pending_auth(message.from_user.id)
 
     async with pool.acquire() as conn:
         await conn.execute(
@@ -1940,8 +1999,7 @@ async def manager_logout_handler(message: types.Message, state: FSMContext):
 @dp.message(F.text == "🚪 Выход из админ-панели")
 async def admin_logout_handler(message: types.Message, state: FSMContext):
     await state.clear()
-    auth_stage.pop(message.from_user.id, None)
-    auth_data.pop(message.from_user.id, None)
+    clear_pending_auth(message.from_user.id)
 
     async with pool.acquire() as conn:
         await conn.execute(
@@ -2018,6 +2076,7 @@ async def setup_bot_commands():
         BotCommand(command="start", description="Запустить бота"),
         BotCommand(command="admin", description="Вход в админ-панель"),
         BotCommand(command="manager", description="Вход в панель менеджера"),
+        BotCommand(command="cancel", description="Отменить текущее действие"),
     ]
     await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
 
