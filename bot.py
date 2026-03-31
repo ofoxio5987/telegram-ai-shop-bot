@@ -5,7 +5,7 @@ import re
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart, Command
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, BotCommandScopeDefault
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 
@@ -77,6 +77,10 @@ def build_order_manage_keyboard(order_id: int, status: str):
         ])
         buttons.append([
             InlineKeyboardButton(text="❌ Отменить", callback_data=f"orderstatus_{order_id}_cancelled")
+        ])
+    elif status in {"completed", "cancelled"}:
+        buttons.append([
+            InlineKeyboardButton(text="🔄 Вернуть в работу", callback_data=f"orderstatus_{order_id}_active")
         ])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
@@ -1196,8 +1200,8 @@ async def manager_change_order_status(callback: CallbackQuery):
         allowed_transitions = {
             "registered": {"active", "cancelled"},
             "active": {"registered", "completed", "cancelled"},
-            "completed": set(),
-            "cancelled": set(),
+            "completed": {"active"},
+            "cancelled": {"active"},
         }
 
         if new_status not in allowed_transitions.get(current_status, set()):
@@ -1884,11 +1888,21 @@ async def category_or_assistant_router(message: types.Message, state: FSMContext
     )
 
 
+async def setup_bot_commands():
+    commands = [
+        BotCommand(command="start", description="Запустить бота"),
+        BotCommand(command="admin", description="Вход в админ-панель"),
+        BotCommand(command="manager", description="Вход в панель менеджера"),
+    ]
+    await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
+
+
 async def main():
     global pool
     pool = await connect()
     await create_tables(pool)
 
+    await setup_bot_commands()
     print("Бот запущен: магазин + новая логика заказов + менеджер")
     await dp.start_polling(bot)
 
