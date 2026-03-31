@@ -1257,42 +1257,167 @@ async def admin_stats_handler(message: types.Message):
             users_count = await conn.fetchval("SELECT COUNT(*) FROM users")
             managers_count = await conn.fetchval("SELECT COUNT(*) FROM managers")
             products_count = await conn.fetchval("SELECT COUNT(*) FROM products")
+            active_products_count = await conn.fetchval("SELECT COUNT(*) FROM products WHERE is_active = TRUE")
             categories_count = await conn.fetchval("SELECT COUNT(*) FROM categories")
             favorites_count = await conn.fetchval("SELECT COUNT(*) FROM favorites")
             cart_count = await conn.fetchval("SELECT COUNT(*) FROM cart")
             actions_count = await conn.fetchval("SELECT COUNT(*) FROM user_actions")
+            assistant_count = await conn.fetchval("SELECT COUNT(*) FROM assistant_sessions")
+
             orders_count = await conn.fetchval("SELECT COUNT(*) FROM orders")
-            revenue = await conn.fetchval(
+            registered_count = await conn.fetchval("SELECT COUNT(*) FROM orders WHERE status = 'registered'")
+            active_count = await conn.fetchval("SELECT COUNT(*) FROM orders WHERE status = 'active'")
+            completed_count = await conn.fetchval("SELECT COUNT(*) FROM orders WHERE status = 'completed'")
+            cancelled_count = await conn.fetchval("SELECT COUNT(*) FROM orders WHERE status = 'cancelled'")
+
+            revenue_completed = await conn.fetchval(
                 "SELECT COALESCE(SUM(total_amount), 0) FROM orders WHERE status = 'completed'"
             )
-            assistant_count = await conn.fetchval("SELECT COUNT(*) FROM assistant_sessions")
-            status_rows = await conn.fetch(
+            revenue_all = await conn.fetchval(
+                "SELECT COALESCE(SUM(total_amount), 0) FROM orders"
+            )
+            avg_check_completed = await conn.fetchval(
+                "SELECT COALESCE(ROUND(AVG(total_amount)), 0) FROM orders WHERE status = 'completed'"
+            )
+            avg_check_all = await conn.fetchval(
+                "SELECT COALESCE(ROUND(AVG(total_amount)), 0) FROM orders"
+            )
+
+            ordering_users_count = await conn.fetchval(
+                "SELECT COUNT(DISTINCT telegram_id) FROM orders"
+            )
+
+            top_buyer = await conn.fetchrow(
                 """
-                SELECT status, COUNT(*) AS cnt
+                SELECT telegram_id, COUNT(*) AS orders_cnt, COALESCE(SUM(total_amount), 0) AS total_sum
                 FROM orders
-                GROUP BY status
-                ORDER BY cnt DESC
+                GROUP BY telegram_id
+                ORDER BY total_sum DESC, orders_cnt DESC
+                LIMIT 1
                 """
             )
 
+            top_products_qty = await conn.fetch(
+                """
+                SELECT p.name, SUM(oi.quantity) AS total_qty
+                FROM order_items oi
+                JOIN products p ON oi.product_id = p.id
+                JOIN orders o ON oi.order_id = o.id
+                GROUP BY p.name
+                ORDER BY total_qty DESC, p.name ASC
+                LIMIT 5
+                """
+            )
+
+            top_products_revenue = await conn.fetch(
+                """
+                SELECT p.name, SUM(oi.quantity * oi.price) AS revenue
+                FROM order_items oi
+                JOIN products p ON oi.product_id = p.id
+                JOIN orders o ON oi.order_id = o.id
+                GROUP BY p.name
+                ORDER BY revenue DESC, p.name ASC
+                LIMIT 5
+                """
+            )
+
+            top_categories = await conn.fetch(
+                """
+                SELECT c.name AS category_name, SUM(oi.quantity) AS total_qty
+                FROM order_items oi
+                JOIN products p ON oi.product_id = p.id
+                JOIN categories c ON p.category_id = c.id
+                JOIN orders o ON oi.order_id = o.id
+                GROUP BY c.name
+                ORDER BY total_qty DESC, c.name ASC
+                LIMIT 5
+                """
+            )
+
+            order_days = await conn.fetch(
+                """
+                SELECT TO_CHAR(created_at::date, 'YYYY-MM-DD') AS day, COUNT(*) AS cnt, COALESCE(SUM(total_amount), 0) AS total_sum
+                FROM orders
+                WHERE created_at >= CURRENT_DATE - INTERVAL '6 days'
+                GROUP BY created_at::date
+                ORDER BY created_at::date ASC
+                """
+            )
+
+        def pct(part: int, total: int) -> float:
+            return round((part / total) * 100, 1) if total else 0.0
+
+        completion_rate = pct(completed_count, orders_count)
+        cancellation_rate = pct(cancelled_count, orders_count)
+        active_share = pct(active_count, orders_count)
+        registered_share = pct(registered_count, orders_count)
+
+        avg_orders_per_user = round((orders_count / ordering_users_count), 2) if ordering_users_count else 0.0
+
         text = (
-            "📊 Статистика магазина\n\n"
-            f"👥 Пользователей: {users_count}\n"
-            f"🧑‍💼 Менеджеров: {managers_count}\n"
-            f"📦 Товаров: {products_count}\n"
-            f"🗂 Категорий: {categories_count}\n"
-            f"❤️ Добавлений в избранное: {favorites_count}\n"
-            f"🧺 Товаров в корзинах: {cart_count}\n"
-            f"📈 Действий пользователей: {actions_count}\n"
-            f"🧾 Заказов: {orders_count}\n"
-            f"💵 Выручка по выполненным заказам: {revenue} ₸\n"
-            f"🤖 Использований помощника: {assistant_count}\n\n"
-            "📦 Заказы по статусам:\n"
+            "📊 Продвинутая статистика магазина\n\n"
+            "🏪 Общая информация:\n"
+            f"• Пользователей: {users_count}\n"
+            f"• Менеджеров: {managers_count}\n"
+            f"• Категорий: {categories_count}\n"
+            f"• Товаров всего: {products_count}\n"
+            f"• Активных товаров: {active_products_count}\n"
+            f"• Добавлений в избранное: {favorites_count}\n"
+            f"• Товаров в корзинах: {cart_count}\n"
+            f"• Действий пользователей: {actions_count}\n"
+            f"• Использований помощника: {assistant_count}\n\n"
+
+            "🧾 Аналитика заказов:\n"
+            f"• Всего заказов: {orders_count}\n"
+            f"• На регистрации: {registered_count} ({registered_share}%)\n"
+            f"• Активных: {active_count} ({active_share}%)\n"
+            f"• Выполненных: {completed_count} ({completion_rate}%)\n"
+            f"• Отменённых: {cancelled_count} ({cancellation_rate}%)\n\n"
+
+            "💵 Финансовая аналитика:\n"
+            f"• Сумма всех заказов: {revenue_all} ₸\n"
+            f"• Выручка по выполненным заказам: {revenue_completed} ₸\n"
+            f"• Средний чек по всем заказам: {avg_check_all} ₸\n"
+            f"• Средний чек по выполненным заказам: {avg_check_completed} ₸\n\n"
+
+            "👤 Пользовательская аналитика:\n"
+            f"• Пользователей с заказами: {ordering_users_count}\n"
+            f"• Среднее число заказов на пользователя: {avg_orders_per_user}\n"
         )
 
-        if status_rows:
-            for item in status_rows:
-                text += f"• {format_status(item['status'])} — {item['cnt']}\n"
+        if top_buyer:
+            text += (
+                f"• Топ-покупатель: {top_buyer['telegram_id']} "
+                f"(заказов: {top_buyer['orders_cnt']}, сумма: {top_buyer['total_sum']} ₸)\n\n"
+            )
+        else:
+            text += "• Топ-покупатель: пока нет данных\n\n"
+
+        text += "🏆 Топ-5 товаров по количеству продаж:\n"
+        if top_products_qty:
+            for i, item in enumerate(top_products_qty, start=1):
+                text += f"{i}. {item['name']} — {item['total_qty']} шт.\n"
+        else:
+            text += "Пока нет данных\n"
+
+        text += "\n💰 Топ-5 товаров по выручке:\n"
+        if top_products_revenue:
+            for i, item in enumerate(top_products_revenue, start=1):
+                text += f"{i}. {item['name']} — {item['revenue']} ₸\n"
+        else:
+            text += "Пока нет данных\n"
+
+        text += "\n🗂 Топ-5 категорий по заказам:\n"
+        if top_categories:
+            for i, item in enumerate(top_categories, start=1):
+                text += f"{i}. {item['category_name']} — {item['total_qty']} шт.\n"
+        else:
+            text += "Пока нет данных\n"
+
+        text += "\n📅 Заказы за последние 7 дней:\n"
+        if order_days:
+            for item in order_days:
+                text += f"• {item['day']} — {item['cnt']} заказ(ов), сумма: {item['total_sum']} ₸\n"
         else:
             text += "Пока нет данных\n"
 
