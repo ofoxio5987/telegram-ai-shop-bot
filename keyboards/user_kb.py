@@ -8,7 +8,7 @@ def get_main_menu():
             [KeyboardButton(text="❤️ Избранное"), KeyboardButton(text="🧺 Корзина")],
             [KeyboardButton(text="📜 Мои заказы"), KeyboardButton(text="🎯 Рекомендации")],
             [KeyboardButton(text="🤖 Умный помощник"), KeyboardButton(text="👤 Профиль")],
-            [KeyboardButton(text="ℹ️ Помощь"), KeyboardButton(text="🔐 Админ-вход")]
+            [KeyboardButton(text="ℹ️ Помощь")]
         ],
         resize_keyboard=True
     )

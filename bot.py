@@ -4,7 +4,7 @@ import re
 
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F, types
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.types import CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -19,7 +19,7 @@ from keyboards.inline_kb import (
 from keyboards.admin_kb import get_admin_menu
 from states.product_states import AddProduct, EditProduct, DeleteProduct
 from states.category_states import AddCategory, EditCategory, DeleteCategory
-from states.assistant_states import SearchState, AssistantState
+from states.assistant_states import SearchState
 
 
 load_dotenv()
@@ -84,7 +84,7 @@ def normalize_priority(raw_text: str) -> str:
     if any(word in text for word in ["цена", "цену", "дешево", "дёшево", "дешевле", "дёшевле", "эконом", "недорого", "бюджет"]):
         return "цена"
 
-    if any(word in text for word in ["качество", "качеству", "качественный", "лучшее", "лучший", "премиум", "надеж", "надеж", "качествен"]):
+    if any(word in text for word in ["качество", "качеству", "качественный", "лучшее", "лучший", "премиум", "надеж", "надёж", "качествен"]):
         return "качество"
 
     return "универсальность"
@@ -258,8 +258,123 @@ async def show_products_by_category(message: types.Message, category_name: str, 
         )
 
 
+async def process_assistant_request(message: types.Message, user_text: str) -> bool:
+    parsed = parse_user_request(user_text)
+
+    category = parsed.get("category")
+    budget = parsed.get("budget")
+    priority = parsed.get("priority")
+    target_person = parsed.get("target_person")
+
+    if not category:
+        return False
+
+    async with pool.acquire() as conn:
+        category_exists = await conn.fetchval(
+            "SELECT id FROM categories WHERE name = $1",
+            category
+        )
+
+        if not category_exists:
+            await message.answer(
+                f"Категория '{category}' не найдена в базе.",
+                reply_markup=get_main_menu()
+            )
+            return True
+
+        if priority == "цена":
+            order_sql = "ORDER BY p.price ASC"
+        elif priority == "качество":
+            order_sql = "ORDER BY p.price DESC"
+        else:
+            order_sql = "ORDER BY p.stock DESC, p.price ASC"
+
+        if budget is not None:
+            rows = await conn.fetch(
+                f"""
+                SELECT p.id, p.name, p.description, p.price, p.stock, p.image_url
+                FROM products p
+                JOIN categories c ON p.category_id = c.id
+                WHERE c.name = $1
+                  AND p.price <= $2
+                  AND p.is_active = TRUE
+                {order_sql}
+                LIMIT 5
+                """,
+                category,
+                budget
+            )
+        else:
+            rows = await conn.fetch(
+                f"""
+                SELECT p.id, p.name, p.description, p.price, p.stock, p.image_url
+                FROM products p
+                JOIN categories c ON p.category_id = c.id
+                WHERE c.name = $1
+                  AND p.is_active = TRUE
+                {order_sql}
+                LIMIT 5
+                """,
+                category
+            )
+
+        await conn.execute(
+            """
+            UPDATE users
+            SET budget = $1, favorite_category = $2
+            WHERE telegram_id = $3
+            """,
+            budget,
+            category,
+            message.from_user.id
+        )
+
+        await conn.execute(
+            """
+            INSERT INTO assistant_sessions (telegram_id, category, budget_max, priority, target_person)
+            VALUES ($1, $2, $3, $4, $5)
+            """,
+            message.from_user.id,
+            category,
+            budget,
+            priority,
+            target_person
+        )
+
+    await log_action(message.from_user.id, "assistant_rule_based")
+    budget_text = f"до {budget} ₸" if budget is not None else "не указан"
+    target_text = target_person if target_person else "не указан"
+
+    if not rows:
+        await message.answer(
+            f"🤖 Я понял запрос так:\n"
+            f"Категория: {category}\n"
+            f"Бюджет: {budget_text}\n"
+            f"Приоритет: {priority}\n"
+            f"Для кого: {target_text}\n\n"
+            "Подходящих товаров не нашлось. Попробуйте увеличить бюджет или изменить запрос.",
+            reply_markup=get_main_menu()
+        )
+        return True
+
+    await message.answer(
+        f"🤖 Я понял запрос так:\n"
+        f"Категория: {category}\n"
+        f"Бюджет: {budget_text}\n"
+        f"Приоритет: {priority}\n"
+        f"Для кого: {target_text}",
+        reply_markup=get_main_menu()
+    )
+
+    for row in rows:
+        await send_product_card(message, row)
+
+    return True
+
+
 @dp.message(CommandStart())
-async def start(message: types.Message):
+async def start(message: types.Message, state: FSMContext):
+    await state.clear()
     await save_user(message)
 
     await message.answer(
@@ -269,11 +384,12 @@ async def start(message: types.Message):
     )
 
 
-# ---------- ВХОД В АДМИНКУ ----------
+# ---------- ВХОД В АДМИНКУ ТОЛЬКО ЧЕРЕЗ /admin ----------
 
-@dp.message(F.text == "🔐 Админ-вход")
-async def admin_login_start(message: types.Message):
+@dp.message(Command("admin"))
+async def admin_login_start(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
+    await state.clear()
     admin_auth_stage[user_id] = "login"
     admin_auth_data[user_id] = {}
     await message.answer("Введите логин администратора:")
@@ -288,7 +404,7 @@ async def admin_login_input(message: types.Message):
 
 
 @dp.message(lambda message: admin_auth_stage.get(message.from_user.id) == "password")
-async def admin_password_input(message: types.Message):
+async def admin_password_input(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     login = admin_auth_data.get(user_id, {}).get("login")
     password = message.text.strip()
@@ -302,12 +418,14 @@ async def admin_password_input(message: types.Message):
     if not admin:
         admin_auth_stage.pop(user_id, None)
         admin_auth_data.pop(user_id, None)
+        await state.clear()
         await message.answer("Неверный логин.", reply_markup=get_main_menu())
         return
 
     if password != admin["password_hash"]:
         admin_auth_stage.pop(user_id, None)
         admin_auth_data.pop(user_id, None)
+        await state.clear()
         await message.answer("Неверный пароль.", reply_markup=get_main_menu())
         return
 
@@ -320,6 +438,7 @@ async def admin_password_input(message: types.Message):
 
     admin_auth_stage.pop(user_id, None)
     admin_auth_data.pop(user_id, None)
+    await state.clear()
 
     await message.answer(
         "✅ Вход в админ-панель выполнен успешно.",
@@ -339,9 +458,21 @@ async def help_handler(message: types.Message):
         "🧺 Корзина — товары к заказу\n"
         "📜 Мои заказы — история заказов\n"
         "🎯 Рекомендации — персональные предложения\n"
-        "🤖 Умный помощник — подбор товара\n"
-        "👤 Профиль — ваши данные\n"
-        "🔐 Админ-вход — вход в админ-панель",
+        "🤖 Умный помощник — можно просто написать, что вам нужно\n"
+        "👤 Профиль — ваши данные\n\n"
+        "Для входа в админ-панель используйте команду /admin",
+        reply_markup=get_main_menu()
+    )
+
+
+@dp.message(F.text == "🤖 Умный помощник")
+async def assistant_hint(message: types.Message):
+    await message.answer(
+        "🤖 Я всегда активен. Просто напишите, какой товар вам нужен.\n\n"
+        "Например:\n"
+        "• Нужен подарок девушке до 30000\n"
+        "• Хочу что-то из электроники до 50000, главное качество\n"
+        "• Нужны недорогие аксессуары",
         reply_markup=get_main_menu()
     )
 
@@ -752,149 +883,6 @@ async def search_process(message: types.Message, state: FSMContext):
         await send_product_card(message, row)
 
 
-# ---------- УМНЫЙ ПОМОЩНИК ----------
-
-@dp.message(F.text == "🤖 Умный помощник")
-async def assistant_start(message: types.Message, state: FSMContext):
-    await state.set_state(AssistantState.waiting_for_request)
-    await message.answer(
-        "🤖 Опишите, какой товар вам нужен одним сообщением.\n\n"
-        "Например:\n"
-        "• Нужен подарок девушке до 30000\n"
-        "• Хочу что-то из электроники до 50000, главное качество\n"
-        "• Нужны недорогие аксессуары"
-    )
-
-
-@dp.message(AssistantState.waiting_for_request)
-async def assistant_process_request(message: types.Message, state: FSMContext):
-    try:
-        user_text = message.text.strip()
-        parsed = parse_user_request(user_text)
-
-        category = parsed.get("category")
-        budget = parsed.get("budget")
-        priority = parsed.get("priority")
-        target_person = parsed.get("target_person")
-
-        if not category:
-            await message.answer(
-                "Я не смог точно определить категорию.\n"
-                "Попробуйте указать одну из категорий: Электроника, Одежда, Обувь, Аксессуары."
-            )
-            return
-
-        async with pool.acquire() as conn:
-            category_exists = await conn.fetchval(
-                "SELECT id FROM categories WHERE name = $1",
-                category
-            )
-
-            if not category_exists:
-                await state.clear()
-                await message.answer(
-                    f"Категория '{category}' не найдена в базе.",
-                    reply_markup=get_main_menu()
-                )
-                return
-
-            if priority == "цена":
-                order_sql = "ORDER BY p.price ASC"
-            elif priority == "качество":
-                order_sql = "ORDER BY p.price DESC"
-            else:
-                order_sql = "ORDER BY p.stock DESC, p.price ASC"
-
-            if budget is not None:
-                rows = await conn.fetch(
-                    f"""
-                    SELECT p.id, p.name, p.description, p.price, p.stock, p.image_url
-                    FROM products p
-                    JOIN categories c ON p.category_id = c.id
-                    WHERE c.name = $1
-                      AND p.price <= $2
-                      AND p.is_active = TRUE
-                    {order_sql}
-                    LIMIT 5
-                    """,
-                    category,
-                    budget
-                )
-            else:
-                rows = await conn.fetch(
-                    f"""
-                    SELECT p.id, p.name, p.description, p.price, p.stock, p.image_url
-                    FROM products p
-                    JOIN categories c ON p.category_id = c.id
-                    WHERE c.name = $1
-                      AND p.is_active = TRUE
-                    {order_sql}
-                    LIMIT 5
-                    """,
-                    category
-                )
-
-            await conn.execute(
-                """
-                UPDATE users
-                SET budget = $1, favorite_category = $2
-                WHERE telegram_id = $3
-                """,
-                budget,
-                category,
-                message.from_user.id
-            )
-
-            await conn.execute(
-                """
-                INSERT INTO assistant_sessions (telegram_id, category, budget_max, priority, target_person)
-                VALUES ($1, $2, $3, $4, $5)
-                """,
-                message.from_user.id,
-                category,
-                budget,
-                priority,
-                target_person
-            )
-
-        await log_action(message.from_user.id, "assistant_rule_based")
-        await state.clear()
-
-        if not rows:
-            budget_text = f"до {budget} ₸" if budget is not None else "без ограничения бюджета"
-            await message.answer(
-                f"🤖 Я понял запрос так:\n"
-                f"Категория: {category}\n"
-                f"Бюджет: {budget_text}\n"
-                f"Приоритет: {priority}\n\n"
-                "Подходящих товаров не нашлось. Попробуйте увеличить бюджет или изменить запрос.",
-                reply_markup=get_main_menu()
-            )
-            return
-
-        budget_text = f"до {budget} ₸" if budget is not None else "не указан"
-        target_text = target_person if target_person else "не указан"
-
-        await message.answer(
-            f"🤖 Я понял запрос так:\n"
-            f"Категория: {category}\n"
-            f"Бюджет: {budget_text}\n"
-            f"Приоритет: {priority}\n"
-            f"Для кого: {target_text}",
-            reply_markup=get_main_menu()
-        )
-
-        for row in rows:
-            await send_product_card(message, row)
-
-    except Exception as e:
-        await state.clear()
-        await message.answer(
-            f"Ошибка в умном помощнике: {e}",
-            reply_markup=get_main_menu()
-        )
-
-
 # ---------- АДМИН-ПАНЕЛЬ ----------
 
 @dp.message(F.text == "📊 Статистика")
@@ -1075,6 +1063,7 @@ async def admin_add_product(message: types.Message, state: FSMContext):
         await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
         return
 
+    await state.clear()
     await state.set_state(AddProduct.name)
     await message.answer("Введите название товара:")
 
@@ -1165,6 +1154,7 @@ async def edit_product_start(message: types.Message, state: FSMContext):
         await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
         return
 
+    await state.clear()
     await state.set_state(EditProduct.choose_product)
     await message.answer(
         "Введите точное название товара, который хотите изменить:"
@@ -1290,6 +1280,7 @@ async def admin_delete_product(message: types.Message, state: FSMContext):
         await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
         return
 
+    await state.clear()
     await state.set_state(DeleteProduct.choose_product)
     await message.answer("Введите точное название товара для удаления:")
 
@@ -1321,6 +1312,7 @@ async def admin_add_category_start(message: types.Message, state: FSMContext):
         await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
         return
 
+    await state.clear()
     await state.set_state(AddCategory.name)
     await message.answer("Введите название новой категории:")
 
@@ -1366,6 +1358,7 @@ async def admin_edit_category_start(message: types.Message, state: FSMContext):
         await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
         return
 
+    await state.clear()
     await state.set_state(EditCategory.old_name)
     await message.answer("Введите текущее название категории:")
 
@@ -1415,6 +1408,7 @@ async def admin_delete_category_start(message: types.Message, state: FSMContext)
         await message.answer("Доступ запрещён.", reply_markup=get_main_menu())
         return
 
+    await state.clear()
     await state.set_state(DeleteCategory.name)
     await message.answer("Введите название категории для удаления:")
 
@@ -1439,7 +1433,11 @@ async def delete_category_finish(message: types.Message, state: FSMContext):
 
 
 @dp.message(F.text == "🚪 Выход из админ-панели")
-async def admin_logout_handler(message: types.Message):
+async def admin_logout_handler(message: types.Message, state: FSMContext):
+    await state.clear()
+    admin_auth_stage.pop(message.from_user.id, None)
+    admin_auth_data.pop(message.from_user.id, None)
+
     async with pool.acquire() as conn:
         await conn.execute(
             "UPDATE admins SET telegram_id = NULL WHERE telegram_id = $1",
@@ -1449,29 +1447,50 @@ async def admin_logout_handler(message: types.Message):
 
 
 @dp.message(F.text == "⬅️ Назад")
-async def back_handler(message: types.Message):
+async def back_handler(message: types.Message, state: FSMContext):
+    await state.clear()
     await message.answer("Главное меню 👇", reply_markup=get_main_menu())
 
 
-# ---------- ДИНАМИЧЕСКИЕ КАТЕГОРИИ ----------
+# ---------- FALLBACK: КАТЕГОРИИ И УМНЫЙ ПОМОЩНИК ----------
 
 @dp.message()
-async def category_router(message: types.Message):
+async def category_or_assistant_router(message: types.Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state is not None:
+        return
+
+    if admin_auth_stage.get(message.from_user.id) in {"login", "password"}:
+        return
+
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Пожалуйста, используйте кнопки ниже 👇", reply_markup=get_main_menu())
+        return
+
     async with pool.acquire() as conn:
         exists = await conn.fetchval(
             "SELECT COUNT(*) FROM categories WHERE name = $1",
-            message.text
+            text
         )
 
-    if exists == 0:
-        await message.answer(
-            "Пожалуйста, используйте кнопки ниже 👇",
-            reply_markup=get_main_menu()
-        )
+    if exists > 0:
+        await log_action(message.from_user.id, "open_category")
+        await show_products_by_category(message, text, "📦")
         return
 
-    await log_action(message.from_user.id, "open_category")
-    await show_products_by_category(message, message.text, "📦")
+    handled = await process_assistant_request(message, text)
+    if handled:
+        return
+
+    await message.answer(
+        "Я не смог точно понять запрос.\n"
+        "Попробуйте написать, например:\n"
+        "• Нужна электроника до 50000\n"
+        "• Хочу недорогие аксессуары\n"
+        "• Покажи обувь",
+        reply_markup=get_main_menu()
+    )
 
 
 async def main():
@@ -1479,7 +1498,7 @@ async def main():
     pool = await connect()
     await create_tables(pool)
 
-    print("Бот запущен: магазин + rule-based помощник + заказ + редактирование товара")
+    print("Бот запущен: магазин + всегда активный помощник + админка через /admin")
     await dp.start_polling(bot)
 
 
