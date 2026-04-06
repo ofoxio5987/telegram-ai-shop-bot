@@ -233,20 +233,49 @@ def parse_user_request(user_text: str) -> dict:
 
     priority = normalize_priority(text)
 
-    if "девушк" in text or "жене" in text or "женщин" in text:
+    female_keywords = [
+        "девушк", "жене", "женщин", "сестре", "маме", "подруге",
+        "коллеге девушке", "коллеге женщине", "тете", "тёте",
+        "бабушке", "невесте"
+    ]
+
+    male_keywords = [
+        "мужчин", "парню", "мужу", "брату", "другу", "свату",
+        "отцу", "папе", "дяде", "дедушке", "коллеге мужчине",
+        "коллеге парню", "сыну", "зятю"
+    ]
+
+    child_keywords = [
+        "ребен", "ребён", "дет", "малыш", "ребёнку", "ребенку",
+        "дочке", "дочери"
+    ]
+
+    target_person = None
+
+    if any(word in text for word in female_keywords):
         target_person = "девушке"
-    elif "мужчин" in text or "парню" in text or "мужу" in text:
+    elif any(word in text for word in male_keywords):
         target_person = "мужчине"
-    elif "ребен" in text or "ребён" in text or "дет" in text:
+    elif any(word in text for word in child_keywords):
         target_person = "ребенку"
-    else:
-        target_person = None
 
     if category is None and "подар" in text:
         if target_person == "девушке":
             category = "Аксессуары"
         elif target_person == "мужчине":
             category = "Электроника"
+        elif target_person == "ребенку":
+            category = "Аксессуары"
+        else:
+            category = "Аксессуары"
+
+    if category is None:
+        if "для учеб" in text or "учебы" in text or "учёбы" in text:
+            category = "Аксессуары"
+        elif "для работы" in text or "офиса" in text:
+            category = "Электроника"
+        elif "недорог" in text or "дешев" in text or "дёшев" in text:
+            category = "Аксессуары"
 
     return {
         "category": category,
@@ -352,7 +381,7 @@ async def process_assistant_request(message: types.Message, user_text: str) -> b
     target_person = parsed.get("target_person")
 
     if not category:
-        return False
+        category = "Аксессуары"
 
     async with pool.acquire() as conn:
         category_exists = await conn.fetchval(
