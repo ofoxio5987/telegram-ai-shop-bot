@@ -10,6 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from database import connect, create_tables
+from services.ai_consultant import generate_ai_recommendation
 from keyboards.user_kb import get_main_menu, build_categories_keyboard
 from keyboards.inline_kb import (
     product_inline_keyboard,
@@ -376,7 +377,7 @@ async def process_assistant_request(message: types.Message, user_text: str) -> b
         if budget is not None:
             rows = await conn.fetch(
                 f"""
-                SELECT p.id, p.name, p.description, p.price, p.stock, p.image_url
+                SELECT p.id, p.name, p.description, p.price, p.stock, p.image_url, c.name AS category_name
                 FROM products p
                 JOIN categories c ON p.category_id = c.id
                 WHERE c.name = $1
@@ -391,7 +392,7 @@ async def process_assistant_request(message: types.Message, user_text: str) -> b
         else:
             rows = await conn.fetch(
                 f"""
-                SELECT p.id, p.name, p.description, p.price, p.stock, p.image_url
+                SELECT p.id, p.name, p.description, p.price, p.stock, p.image_url, c.name AS category_name
                 FROM products p
                 JOIN categories c ON p.category_id = c.id
                 WHERE c.name = $1
@@ -454,6 +455,23 @@ async def process_assistant_request(message: types.Message, user_text: str) -> b
 
     for row in rows:
         await send_product_card(message, row)
+
+    ai_products = [
+        {
+            "name": row["name"],
+            "price": row["price"],
+            "category": row["category_name"]
+        }
+        for row in rows
+    ]
+
+    ai_text = await generate_ai_recommendation(
+        user_query=user_text,
+        products=ai_products
+    )
+
+    if ai_text:
+        await message.answer("🧠 AI-консультант:\n" + ai_text)
 
     return True
 
