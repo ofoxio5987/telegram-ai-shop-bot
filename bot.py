@@ -208,7 +208,6 @@ def normalize_category(raw_text: str | None) -> str | None:
 
     return None
 
-
 def parse_user_request(user_text: str) -> dict:
     text = user_text.lower().strip()
 
@@ -235,46 +234,80 @@ def parse_user_request(user_text: str) -> dict:
 
     female_keywords = [
         "девушк", "жене", "женщин", "сестре", "маме", "подруге",
-        "коллеге девушке", "коллеге женщине", "тете", "тёте",
-        "бабушке", "невесте"
+        "тете", "тёте", "бабушке", "невесте"
     ]
 
     male_keywords = [
         "мужчин", "парню", "мужу", "брату", "другу", "свату",
-        "отцу", "папе", "дяде", "дедушке", "коллеге мужчине",
-        "коллеге парню", "сыну", "зятю"
+        "отцу", "папе", "дяде", "дедушке", "зятю"
     ]
 
     child_keywords = [
-        "ребен", "ребён", "дет", "малыш", "ребёнку", "ребенку",
-        "дочке", "дочери"
+        "ребен", "ребён", "дет", "ребёнку", "ребенку",
+        "сыну", "дочке", "дочери", "малышу"
+    ]
+
+    colleague_keywords = [
+        "коллеге", "начальнику", "шефу", "сотруднику"
+    ]
+
+    student_keywords = [
+        "для учеб", "учебы", "учёбы", "студент", "школы", "универ"
+    ]
+
+    work_keywords = [
+        "для работы", "для офиса", "офиса", "работы", "рабочее"
+    ]
+
+    gift_keywords = [
+        "подар", "сюрприз", "презент"
     ]
 
     target_person = None
+    scenario = None
 
     if any(word in text for word in female_keywords):
         target_person = "девушке"
+        scenario = "gift_female"
     elif any(word in text for word in male_keywords):
         target_person = "мужчине"
+        scenario = "gift_male"
     elif any(word in text for word in child_keywords):
         target_person = "ребенку"
+        scenario = "gift_child"
+    elif any(word in text for word in colleague_keywords):
+        target_person = "коллеге"
+        scenario = "gift_colleague"
 
-    if category is None and "подар" in text:
-        if target_person == "девушке":
+    if any(word in text for word in student_keywords):
+        scenario = "study"
+    elif any(word in text for word in work_keywords):
+        scenario = "work"
+
+    is_gift = any(word in text for word in gift_keywords)
+
+    if category is None:
+        if scenario == "gift_female":
             category = "Аксессуары"
-        elif target_person == "мужчине":
+        elif scenario == "gift_male":
             category = "Электроника"
-        elif target_person == "ребенку":
+        elif scenario == "gift_child":
             category = "Аксессуары"
-        else:
+        elif scenario == "gift_colleague":
+            category = "Аксессуары"
+        elif scenario == "study":
+            category = "Аксессуары"
+        elif scenario == "work":
+            category = "Электроника"
+        elif is_gift:
             category = "Аксессуары"
 
     if category is None:
-        if "для учеб" in text or "учебы" in text or "учёбы" in text:
+        if any(word in text for word in ["недорог", "дешев", "дёшев", "бюджетн", "эконом"]):
             category = "Аксессуары"
-        elif "для работы" in text or "офиса" in text:
+        elif any(word in text for word in ["качеств", "премиум", "лучшее", "лучший", "надеж", "надёж"]):
             category = "Электроника"
-        elif "недорог" in text or "дешев" in text or "дёшев" in text:
+        else:
             category = "Аксессуары"
 
     return {
@@ -282,6 +315,8 @@ def parse_user_request(user_text: str) -> dict:
         "budget": budget,
         "priority": priority,
         "target_person": target_person,
+        "scenario": scenario,
+        "is_gift": is_gift,
     }
 
 
@@ -371,7 +406,6 @@ async def show_products_by_category(message: types.Message, category_name: str, 
             reply_markup=get_main_menu()
         )
 
-
 async def process_assistant_request(message: types.Message, user_text: str) -> bool:
     parsed = parse_user_request(user_text)
 
@@ -379,58 +413,79 @@ async def process_assistant_request(message: types.Message, user_text: str) -> b
     budget = parsed.get("budget")
     priority = parsed.get("priority")
     target_person = parsed.get("target_person")
+    scenario = parsed.get("scenario")
 
-    if not category:
-        category = "Аксессуары"
+    fallback_categories_map = {
+        "gift_female": ["Аксессуары", "Одежда"],
+        "gift_male": ["Электроника", "Аксессуары"],
+        "gift_child": ["Аксессуары", "Обувь"],
+        "gift_colleague": ["Аксессуары", "Электроника"],
+        "study": ["Аксессуары", "Электроника"],
+        "work": ["Электроника", "Аксессуары"],
+        None: [category or "Аксессуары"]
+    }
+
+    categories_to_try = fallback_categories_map.get(scenario, [category or "Аксессуары"])
+
+    if category and category not in categories_to_try:
+        categories_to_try.insert(0, category)
+
+    if priority == "цена":
+        order_sql = "ORDER BY p.price ASC"
+    elif priority == "качество":
+        order_sql = "ORDER BY p.price DESC"
+    else:
+        order_sql = "ORDER BY p.stock DESC, p.price ASC"
+
+    rows = []
+    selected_category = None
 
     async with pool.acquire() as conn:
-        category_exists = await conn.fetchval(
-            "SELECT id FROM categories WHERE name = $1",
-            category
-        )
-
-        if not category_exists:
-            await message.answer(
-                f"Категория '{category}' не найдена в базе.",
-                reply_markup=get_main_menu()
+        for current_category in categories_to_try:
+            category_exists = await conn.fetchval(
+                "SELECT id FROM categories WHERE name = $1",
+                current_category
             )
-            return True
 
-        if priority == "цена":
-            order_sql = "ORDER BY p.price ASC"
-        elif priority == "качество":
-            order_sql = "ORDER BY p.price DESC"
-        else:
-            order_sql = "ORDER BY p.stock DESC, p.price ASC"
+            if not category_exists:
+                continue
 
-        if budget is not None:
-            rows = await conn.fetch(
-                f"""
-                SELECT p.id, p.name, p.description, p.price, p.stock, p.image_url, c.name AS category_name
-                FROM products p
-                JOIN categories c ON p.category_id = c.id
-                WHERE c.name = $1
-                  AND p.price <= $2
-                  AND p.is_active = TRUE
-                {order_sql}
-                LIMIT 5
-                """,
-                category,
-                budget
-            )
-        else:
-            rows = await conn.fetch(
-                f"""
-                SELECT p.id, p.name, p.description, p.price, p.stock, p.image_url, c.name AS category_name
-                FROM products p
-                JOIN categories c ON p.category_id = c.id
-                WHERE c.name = $1
-                  AND p.is_active = TRUE
-                {order_sql}
-                LIMIT 5
-                """,
-                category
-            )
+            if budget is not None:
+                current_rows = await conn.fetch(
+                    f"""
+                    SELECT p.id, p.name, p.description, p.price, p.stock, p.image_url, c.name AS category_name
+                    FROM products p
+                    JOIN categories c ON p.category_id = c.id
+                    WHERE c.name = $1
+                      AND p.price <= $2
+                      AND p.is_active = TRUE
+                    {order_sql}
+                    LIMIT 5
+                    """,
+                    current_category,
+                    budget
+                )
+            else:
+                current_rows = await conn.fetch(
+                    f"""
+                    SELECT p.id, p.name, p.description, p.price, p.stock, p.image_url, c.name AS category_name
+                    FROM products p
+                    JOIN categories c ON p.category_id = c.id
+                    WHERE c.name = $1
+                      AND p.is_active = TRUE
+                    {order_sql}
+                    LIMIT 5
+                    """,
+                    current_category
+                )
+
+            if current_rows:
+                rows = current_rows
+                selected_category = current_category
+                break
+
+        if not selected_category:
+            selected_category = category or "Аксессуары"
 
         await conn.execute(
             """
@@ -439,7 +494,7 @@ async def process_assistant_request(message: types.Message, user_text: str) -> b
             WHERE telegram_id = $3
             """,
             budget,
-            category,
+            selected_category,
             message.from_user.id
         )
 
@@ -449,32 +504,33 @@ async def process_assistant_request(message: types.Message, user_text: str) -> b
             VALUES ($1, $2, $3, $4, $5)
             """,
             message.from_user.id,
-            category,
+            selected_category,
             budget,
             priority,
             target_person
         )
 
     await log_action(message.from_user.id, "assistant_rule_based")
+
     budget_text = f"до {budget} ₸" if budget is not None else "не указан"
     target_text = target_person if target_person else "не указан"
 
     if not rows:
         await message.answer(
             f"🤖 Я обработал ваш запрос:\n"
-            f"• Категория: {category}\n"
+            f"• Категория: {selected_category}\n"
             f"• Бюджет: {budget_text}\n"
             f"• Приоритет: {priority}\n"
             f"• Для кого: {target_text}\n\n"
             "📭 Подходящих товаров пока не нашлось.\n"
-            "Попробуйте увеличить бюджет, изменить категорию или сформулировать запрос чуть иначе.",
+            "Попробуйте увеличить бюджет или изменить формулировку запроса.",
             reply_markup=get_main_menu()
         )
         return True
 
     await message.answer(
         f"🤖 Я подобрал для вас товары по такому запросу:\n"
-        f"• Категория: {category}\n"
+        f"• Категория: {selected_category}\n"
         f"• Бюджет: {budget_text}\n"
         f"• Приоритет: {priority}\n"
         f"• Для кого: {target_text}\n\n"
